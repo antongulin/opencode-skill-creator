@@ -1,0 +1,32 @@
+{
+  "name": "opencode-skill-creator",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for skill creation — custom tools for validation, evaluation, description optimization, benchmarking, and review serving.",
+  "type": "module",
+  "main": "./skill-creator.ts",
+  "files": [
+    "skill-creator.ts",
+    "lib/",
+    "templates/"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "skill-creator",
+    "ai-skills",
+    "agent-skills"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/antongulin/opencode-skill-creator.git",
+    "directory": "plugin"
+  },
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.0.0",
+    "@types/bun": "latest"
+  }
+}
