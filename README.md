@@ -28,6 +28,13 @@ Run one command in your project root:
 npx opencode-skill-creator install
 ```
 
+Optional checks:
+
+```bash
+npx opencode-skill-creator --version
+npx opencode-skill-creator --help
+```
+
 What this command does:
 
 1. Creates/updates `opencode.json` in your current project

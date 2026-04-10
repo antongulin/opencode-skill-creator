@@ -4,28 +4,58 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { homedir } from "os"
 import { join, dirname } from "path"
 
+const PKG_PATH = new URL("../package.json", import.meta.url)
+
+function getVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(PKG_PATH, "utf-8"))
+    return pkg.version || "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
 function printHelp() {
   console.log(`opencode-skill-creator installer
 
 Usage:
   npx opencode-skill-creator install [--project|--global]
   npx opencode-skill-creator [--project|--global]
+  npx opencode-skill-creator --version
 
 Options:
   --project   Update ./opencode.json in current directory (default)
   --global    Update ~/.config/opencode/opencode.json
+  -v, --version  Show installer version
   -h, --help  Show help
 `)
 }
 
 function parseArgs(argv) {
-  const args = new Set(argv.slice(2))
+  const input = argv.slice(2)
+  const args = new Set(input)
+
   if (args.has("-h") || args.has("--help")) {
-    return { help: true, global: false }
+    return { help: true, version: false, global: false, command: "install" }
   }
 
-  const global = args.has("--global")
-  return { help: false, global }
+  if (args.has("-v") || args.has("--version")) {
+    return { help: false, version: true, global: false, command: "install" }
+  }
+
+  const hasProject = args.has("--project")
+  const hasGlobal = args.has("--global")
+
+  if (hasProject && hasGlobal) {
+    throw new Error("Use either --project or --global, not both.")
+  }
+
+  const command = input.find((arg) => !arg.startsWith("-")) || "install"
+  if (command !== "install") {
+    throw new Error(`Unknown command: ${command}`)
+  }
+
+  return { help: false, version: false, global: hasGlobal, command }
 }
 
 function getConfigPath(globalInstall) {
@@ -58,8 +88,12 @@ function saveConfig(path, config) {
 }
 
 function ensurePlugin(config) {
-  if (!Array.isArray(config.plugin)) {
+  if (typeof config.plugin === "undefined") {
     config.plugin = []
+  }
+
+  if (!Array.isArray(config.plugin)) {
+    throw new Error('Expected "plugin" to be an array in opencode.json')
   }
 
   if (!config.plugin.includes("opencode-skill-creator")) {
@@ -71,9 +105,14 @@ function ensurePlugin(config) {
 }
 
 function main() {
-  const { help, global } = parseArgs(process.argv)
+  const { help, version, global } = parseArgs(process.argv)
   if (help) {
     printHelp()
+    process.exit(0)
+  }
+
+  if (version) {
+    console.log(getVersion())
     process.exit(0)
   }
 
@@ -100,6 +139,8 @@ function main() {
 try {
   main()
 } catch (error) {
+  printHelp()
+  console.error()
   console.error(error.message)
   process.exit(1)
 }
