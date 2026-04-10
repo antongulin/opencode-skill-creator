@@ -1,0 +1,19 @@
+# Skill creator eval/review generated artifacts
+*-workspace/
+**/*-workspace/
+
+# Review and benchmark outputs
+**/benchmark.json
+**/benchmark.md
+**/feedback.json
+**/review.html
+**/eval_review*.html
+
+# Optimizer and eval logs
+**/improve_iter_*.json
+**/optimization-results*.json
+**/trigger-eval*.json
+
+# Local temp/export artifacts
+tmp/
+*.tmp

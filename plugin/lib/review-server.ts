@@ -425,7 +425,7 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
   const server = Bun.serve({
     port,
     hostname: "127.0.0.1",
-    fetch(req) {
+    async fetch(req) {
       const url = new URL(req.url)
 
       if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
@@ -469,22 +469,28 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
       }
 
       if (req.method === "POST" && url.pathname === "/api/feedback") {
-        return req.json().then((body: unknown) => {
-          try {
-            if (typeof body !== "object" || body === null || !("reviews" in body)) {
-              throw new Error("Expected JSON object with 'reviews' key")
-            }
-            writeFileSync(feedbackPath, JSON.stringify(body, null, 2) + "\n")
-            return new Response(JSON.stringify({ ok: true }), {
-              headers: { "Content-Type": "application/json" },
-            })
-          } catch (e) {
-            return new Response(JSON.stringify({ error: String(e) }), {
-              status: 500,
-              headers: { "Content-Type": "application/json" },
-            })
+        try {
+          const body = (await req.json()) as unknown
+          if (typeof body !== "object" || body === null || !("reviews" in body)) {
+            return new Response(
+              JSON.stringify({ error: "Expected JSON object with 'reviews' key" }),
+              {
+                status: 400,
+                headers: { "Content-Type": "application/json" },
+              },
+            )
           }
-        })
+
+          writeFileSync(feedbackPath, JSON.stringify(body, null, 2) + "\n")
+          return new Response(JSON.stringify({ ok: true }), {
+            headers: { "Content-Type": "application/json" },
+          })
+        } catch (e) {
+          return new Response(JSON.stringify({ error: String(e) }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          })
+        }
       }
 
       return new Response("Not Found", { status: 404 })

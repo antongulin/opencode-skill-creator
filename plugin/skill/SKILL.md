@@ -72,6 +72,8 @@ Check available MCPs — if useful for research (searching docs, finding similar
 
 ### Write the SKILL.md
 
+For new skills, default to a staging location instead of the current repo/worktree. Use a temp workspace like `/tmp/opencode-skills/<skill-name>/` unless the user explicitly requests another path. This avoids cluttering unrelated repositories during skill development.
+
 Based on the user interview, fill in these components:
 
 - **name**: Skill identifier (kebab-case, 1–64 chars, regex `^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -177,7 +179,7 @@ See `references/schemas.md` for the full schema (including the `assertions` fiel
 
 This section is one continuous sequence — don't stop partway through. Do NOT use `/skill-test` or any other testing skill.
 
-Put results in `<skill-name>-workspace/` as a sibling to the skill directory. Within the workspace, organize results by iteration (`iteration-1/`, `iteration-2/`, etc.) and within that, each test case gets a directory (`eval-0/`, `eval-1/`, etc.). Don't create all of this upfront — just create directories as you go.
+Put results in `<skill-name>-workspace/` next to the staged skill directory (for example `/tmp/opencode-skills/<skill-name>-workspace/`). Within the workspace, organize results by iteration (`iteration-1/`, `iteration-2/`, etc.) and within that, each test case gets a directory (`eval-0/`, `eval-1/`, etc.). Don't create all of this upfront — just create directories as you go.
 
 ### Step 1: Spawn all runs (with-skill AND baseline) in the same turn
 
@@ -426,6 +428,8 @@ After the skill is created and validated, help the user install it. Skills can b
 - **Global**: `~/.config/opencode/skills/<skill-name>/SKILL.md` — available in all projects
 
 Copy the skill directory to the desired location. The directory name must match the `name` field in the SKILL.md frontmatter.
+
+Keep all draft/eval artifacts in the staging location; only copy the final validated skill directory into project/global install paths.
 
 You can validate the skill before installation by calling the `skill_validate` tool.
 
