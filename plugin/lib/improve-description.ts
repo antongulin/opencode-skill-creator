@@ -127,6 +127,12 @@ async function callOpenCode(
         }
       }
 
+      const finalChunk = decoder.decode()
+      if (finalChunk) {
+        stdout += finalChunk
+        lineBuffer += finalChunk
+      }
+
       flushLines(true)
       await proc.exited
       await stderrDrained

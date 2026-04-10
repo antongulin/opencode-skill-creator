@@ -106,8 +106,9 @@ function ensureSkillInstalled(): void {
   const shouldInstall = !existsSync(marker) || installedVersion !== PACKAGE_VERSION
   if (!shouldInstall) return
 
+  const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
   try {
-    const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     copyDirRecursive(BUNDLED_SKILL_DIR, tmpInstallDir)
 
     // Preserve user-customized SKILL.md when updating.
@@ -129,12 +130,15 @@ function ensureSkillInstalled(): void {
       renameSync(tmpInstallDir, skillsDir)
     } else {
       copyDirRecursive(tmpInstallDir, skillsDir)
-      rmSync(tmpInstallDir, { recursive: true, force: true })
     }
 
     writeFileSync(versionFile, `${PACKAGE_VERSION}\n`)
   } catch {
     // Silently fail — the user can always install manually
+  } finally {
+    if (existsSync(tmpInstallDir)) {
+      rmSync(tmpInstallDir, { recursive: true, force: true })
+    }
   }
 }
 

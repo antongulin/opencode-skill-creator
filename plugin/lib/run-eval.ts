@@ -199,6 +199,11 @@ async function runSingleQuery(
         }
       }
 
+      const finalChunk = decoder.decode()
+      if (finalChunk) {
+        buffer += finalChunk
+      }
+
       flushBuffer(true)
       await proc.exited
       await stderrDrained
