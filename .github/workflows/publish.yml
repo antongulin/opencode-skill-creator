@@ -18,11 +18,47 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Read plugin version
+      - name: Resolve release version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           VERSION=$(node -p 'require("./plugin/package.json").version')
+          TAG="v${VERSION}"
+
+          npm_exists=false
+          release_exists=false
+
+          if npm view "opencode-skill-creator@${VERSION}" version >/dev/null 2>&1; then
+            npm_exists=true
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            release_exists=true
+          fi
+
+          # Auto-bump patch when both npm and GitHub already have this version.
+          # This keeps release automation fully hands-off on each merge to main.
+          if [[ "$npm_exists" == "true" && "$release_exists" == "true" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            pushd plugin >/dev/null
+            npm version patch --no-git-tag-version
+            VERSION=$(node -p 'require("./package.json").version')
+            popd >/dev/null
+
+            git add plugin/package.json
+            git commit -m "chore(release): bump version to v${VERSION} [skip ci]"
+            git push
+            TAG="v${VERSION}"
+          fi
+
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check npm version
         id: npm
@@ -46,7 +82,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${{ steps.version.outputs.value }}"
+          TAG="${{ steps.version.outputs.tag }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
@@ -58,8 +94,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${{ steps.version.outputs.value }}"
+          TAG="${{ steps.version.outputs.tag }}"
           gh release create "$TAG" \
-            --target "${{ github.sha }}" \
+            --target "${{ steps.version.outputs.target_sha }}" \
             --title "$TAG" \
             --notes "Automated release for opencode-skill-creator $TAG"
