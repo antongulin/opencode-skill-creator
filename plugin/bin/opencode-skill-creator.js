@@ -18,17 +18,29 @@ function getVersion() {
 function printHelp() {
   console.log(`opencode-skill-creator installer
 
+Links:
+  npm:  https://www.npmjs.com/package/opencode-skill-creator
+  repo: https://github.com/antongulin/opencode-skill-creator
+
 Usage:
   npx opencode-skill-creator install [--project|--global]
   npx opencode-skill-creator [--project|--global]
   npx opencode-skill-creator --version
+  npx opencode-skill-creator --about
 
 Options:
   --project   Update ./opencode.json in current directory (default)
   --global    Update ~/.config/opencode/opencode.json
   -v, --version  Show installer version
+  --about     Show package links
   -h, --help  Show help
 `)
+}
+
+function printAbout() {
+  console.log(`opencode-skill-creator ${getVersion()}
+npm:  https://www.npmjs.com/package/opencode-skill-creator
+repo: https://github.com/antongulin/opencode-skill-creator`)
 }
 
 function parseArgs(argv) {
@@ -36,11 +48,33 @@ function parseArgs(argv) {
   const args = new Set(input)
 
   if (args.has("-h") || args.has("--help")) {
-    return { help: true, version: false, global: false, command: "install" }
+    return {
+      help: true,
+      about: false,
+      version: false,
+      global: false,
+      command: "install",
+    }
   }
 
   if (args.has("-v") || args.has("--version")) {
-    return { help: false, version: true, global: false, command: "install" }
+    return {
+      help: false,
+      about: false,
+      version: true,
+      global: false,
+      command: "install",
+    }
+  }
+
+  if (args.has("--about")) {
+    return {
+      help: false,
+      about: true,
+      version: false,
+      global: false,
+      command: "install",
+    }
   }
 
   const hasProject = args.has("--project")
@@ -55,7 +89,13 @@ function parseArgs(argv) {
     throw new Error(`Unknown command: ${command}`)
   }
 
-  return { help: false, version: false, global: hasGlobal, command }
+  return {
+    help: false,
+    about: false,
+    version: false,
+    global: hasGlobal,
+    command,
+  }
 }
 
 function getConfigPath(globalInstall) {
@@ -105,9 +145,14 @@ function ensurePlugin(config) {
 }
 
 function main() {
-  const { help, version, global } = parseArgs(process.argv)
+  const { help, about, version, global } = parseArgs(process.argv)
   if (help) {
     printHelp()
+    process.exit(0)
+  }
+
+  if (about) {
+    printAbout()
     process.exit(0)
   }
 

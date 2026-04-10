@@ -33,6 +33,7 @@ Optional checks:
 ```bash
 npx opencode-skill-creator --version
 npx opencode-skill-creator --help
+npx opencode-skill-creator --about
 ```
 
 What this command does:
