@@ -15,6 +15,7 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { join, dirname } from "path"
+import { homedir } from "os"
 import {
   existsSync,
   mkdirSync,
@@ -83,7 +84,7 @@ function copyDirRecursive(src: string, dest: string): void {
 function ensureSkillInstalled(): void {
   // Determine the global skills directory
   const configDir =
-    process.env.XDG_CONFIG_HOME || join(process.env.HOME || "~", ".config")
+    process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
   const skillsDir = join(configDir, "opencode", "skills", "skill-creator")
   const marker = join(skillsDir, "SKILL.md")
   const versionFile = join(skillsDir, INSTALL_VERSION_FILE)
