@@ -19,8 +19,10 @@ import {
   existsSync,
   mkdirSync,
   copyFileSync,
+  rmSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   writeFileSync,
 } from "fs"
@@ -85,6 +87,8 @@ function ensureSkillInstalled(): void {
   const skillsDir = join(configDir, "opencode", "skills", "skill-creator")
   const marker = join(skillsDir, "SKILL.md")
   const versionFile = join(skillsDir, INSTALL_VERSION_FILE)
+  const userSkillFile = join(skillsDir, "SKILL.md")
+  const userSkillBackup = join(skillsDir, "SKILL.md.user-backup")
 
   // Skip if bundled skill files are missing (e.g., local dev without skill/)
   if (!existsSync(BUNDLED_SKILL_DIR)) return
@@ -103,7 +107,31 @@ function ensureSkillInstalled(): void {
   if (!shouldInstall) return
 
   try {
-    copyDirRecursive(BUNDLED_SKILL_DIR, skillsDir)
+    const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    copyDirRecursive(BUNDLED_SKILL_DIR, tmpInstallDir)
+
+    // Preserve user-customized SKILL.md when updating.
+    if (existsSync(userSkillFile)) {
+      try {
+        copyFileSync(userSkillFile, userSkillBackup)
+      } catch {
+        // Ignore backup failures; continue install.
+      }
+
+      try {
+        copyFileSync(userSkillFile, join(tmpInstallDir, "SKILL.md"))
+      } catch {
+        // If copy fails, continue with bundled SKILL.md.
+      }
+    }
+
+    if (!existsSync(skillsDir)) {
+      renameSync(tmpInstallDir, skillsDir)
+    } else {
+      copyDirRecursive(tmpInstallDir, skillsDir)
+      rmSync(tmpInstallDir, { recursive: true, force: true })
+    }
+
     writeFileSync(versionFile, `${PACKAGE_VERSION}\n`)
   } catch {
     // Silently fail — the user can always install manually

@@ -117,7 +117,33 @@ async function runSingleQuery(
     let triggered = false
     const decoder = new TextDecoder()
     const reader = proc.stdout.getReader()
+    const stderrReader = proc.stderr.getReader()
+    const stderrDecoder = new TextDecoder()
+    const maxStderrChars = 64 * 1024
+    let stderrTail = ""
     const timeoutMs = timeout * 1000
+
+    const stderrDrained = (async () => {
+      try {
+        while (true) {
+          const result = await stderrReader.read()
+          if (result.done) break
+          if (!result.value) continue
+
+          stderrTail += stderrDecoder.decode(result.value, { stream: true })
+          if (stderrTail.length > maxStderrChars) {
+            stderrTail = stderrTail.slice(-maxStderrChars)
+          }
+        }
+
+        stderrTail += stderrDecoder.decode()
+        if (stderrTail.length > maxStderrChars) {
+          stderrTail = stderrTail.slice(-maxStderrChars)
+        }
+      } finally {
+        stderrReader.releaseLock()
+      }
+    })()
 
     const consumeLine = (line: string) => {
       const trimmed = line.trim()
@@ -175,10 +201,10 @@ async function runSingleQuery(
 
       flushBuffer(true)
       await proc.exited
+      await stderrDrained
 
       if ((proc.exitCode ?? 0) !== 0) {
-        const stderrText = await new Response(proc.stderr).text()
-        const cleanedStderr = stderrText.trim()
+        const cleanedStderr = stderrTail.trim()
         throw new Error(
           cleanedStderr
             ? `opencode run exited ${proc.exitCode}: ${cleanedStderr}`
@@ -193,6 +219,8 @@ async function runSingleQuery(
         proc.kill()
         await proc.exited
       }
+
+      await stderrDrained.catch(() => undefined)
     }
 
     return triggered

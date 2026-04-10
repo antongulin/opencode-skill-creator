@@ -48,7 +48,33 @@ async function callOpenCode(
     const textParts: string[] = []
     const decoder = new TextDecoder()
     const reader = proc.stdout.getReader()
+    const stderrReader = proc.stderr.getReader()
+    const stderrDecoder = new TextDecoder()
+    const maxStderrChars = 64 * 1024
+    let stderrTail = ""
     const timeoutMs = timeout * 1000
+
+    const stderrDrained = (async () => {
+      try {
+        while (true) {
+          const result = await stderrReader.read()
+          if (result.done) break
+          if (!result.value) continue
+
+          stderrTail += stderrDecoder.decode(result.value, { stream: true })
+          if (stderrTail.length > maxStderrChars) {
+            stderrTail = stderrTail.slice(-maxStderrChars)
+          }
+        }
+
+        stderrTail += stderrDecoder.decode()
+        if (stderrTail.length > maxStderrChars) {
+          stderrTail = stderrTail.slice(-maxStderrChars)
+        }
+      } finally {
+        stderrReader.releaseLock()
+      }
+    })()
 
     const consumeLine = (line: string) => {
       const trimmed = line.trim()
@@ -103,6 +129,7 @@ async function callOpenCode(
 
       flushLines(true)
       await proc.exited
+      await stderrDrained
     } finally {
       clearTimeout(timeoutId)
       reader.releaseLock()
@@ -111,23 +138,12 @@ async function callOpenCode(
         proc.kill()
         await proc.exited
       }
-    }
 
-    // Check stderr for errors
-    const stderrReader = proc.stderr.getReader()
-    let stderr = ""
-    try {
-      while (true) {
-        const r = await stderrReader.read()
-        if (r.done) break
-        if (r.value) stderr += decoder.decode(r.value, { stream: true })
-      }
-    } finally {
-      stderrReader.releaseLock()
+      await stderrDrained.catch(() => undefined)
     }
 
     if (proc.exitCode !== 0 && proc.exitCode !== null) {
-      throw new Error(`opencode run exited ${proc.exitCode}\nstderr: ${stderr}`)
+      throw new Error(`opencode run exited ${proc.exitCode}\nstderr: ${stderrTail}`)
     }
 
     if (textParts.length > 0) {
