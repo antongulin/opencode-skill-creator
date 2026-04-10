@@ -18,7 +18,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/antongulin/opencode-skill-creator.git",
+    "url": "git+https://github.com/antongulin/opencode-skill-creator.git",
     "directory": "plugin"
   },
   "license": "Apache-2.0",
