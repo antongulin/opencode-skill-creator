@@ -20,7 +20,9 @@ jobs:
 
       - name: Read plugin version
         id: version
-        run: echo "value=$(node -p \"require('./plugin/package.json').version\")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(node -p 'require("./plugin/package.json").version')
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check npm version
         id: npm
