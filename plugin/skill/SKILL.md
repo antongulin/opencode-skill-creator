@@ -23,7 +23,9 @@ Your job when using this skill is to figure out where the user is in this proces
 
 On the other hand, maybe they already have a draft of the skill. In this case you can go straight to the eval/iterate part of the loop.
 
-Of course, you should always be flexible and if the user is like "I don't need to run a bunch of evaluations, just vibe with me", you can do that instead.
+For new skill creation, the intake interview is mandatory. Ask at least 3-5 targeted questions before drafting anything (ask more if the workflow is complex). Treat this as shadowing a teammate: the user is the domain expert and existing employee, and the agent is the new hire that must learn and mirror the real workflow.
+
+You can still be flexible about eval depth and iteration speed after intake. If the user asks to skip intake, warn once that skill quality and workflow match will be worse, get explicit confirmation, and then proceed with best effort.
 
 Then after the skill is done (but again, the order is flexible), you can also run the skill description optimizer (`skill_optimize_loop` tool), which we have a whole separate tool for, to optimize the triggering of the skill.
 
@@ -44,18 +46,27 @@ It's OK to briefly explain terms if you're in doubt, and feel free to clarify te
 
 ## Creating a skill
 
-### Capture Intent
+### Capture Intent (Required Gate for New Skills)
 
-Start by understanding the user's intent. The current conversation might already contain a workflow the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. The user may need to fill the gaps, and should confirm before proceeding to the next step.
+For new skills, this step is mandatory and cannot be skipped. Do not draft SKILL.md, evals, or other files until this interview is complete and the user confirms your summary.
 
-1. What should this skill enable OpenCode to do?
-2. When should this skill trigger? (what user phrases/contexts)
-3. What's the expected output format?
-4. Should we set up test cases to verify the skill works? Skills with objectively verifiable outputs (file transforms, data extraction, code generation, fixed workflow steps) benefit from test cases. Skills with subjective outputs (writing style, art) often don't need them. Suggest the appropriate default based on the skill type, but let the user decide.
+Start by understanding the user's intent. The current conversation might already contain part of the workflow the user wants to capture (e.g., they say "turn this into a skill"). Extract that first: tools used, sequence of steps, corrections, inputs/outputs, and success criteria. Then fill the gaps with questions.
+
+Ask at least 3-5 targeted questions (more when needed). Cover these minimum areas:
+
+1. What should this skill enable OpenCode to do end-to-end?
+2. When should this skill trigger? (phrases, contexts, near-misses)
+3. What output format and quality bar are expected?
+4. What workflow steps must be preserved exactly vs. where can the agent improvise?
+5. Should we set up test cases to verify behavior? Skills with objectively verifiable outputs (file transforms, data extraction, code generation, fixed workflow steps) benefit from test cases. Skills with subjective outputs (writing style, art) often don't need them. Suggest the appropriate default based on skill type, then let the user decide.
+
+Before moving on, summarize your understanding in plain language and ask the user to confirm or correct it.
+
+If the user explicitly asks to skip intake, warn that final quality and workflow fit will likely be worse. Proceed only after explicit confirmation.
 
 ### Interview and Research
 
-Proactively ask questions about edge cases, input/output formats, example files, success criteria, and dependencies. Wait to write test prompts until you've got this part ironed out.
+Proactively ask questions about edge cases, input/output formats, example files, success criteria, and dependencies. Use a buddy/shadowing stance: mirror the user's real workflow, terminology, handoffs, and decision points. Wait to write test prompts until you've got this part ironed out.
 
 Check available MCPs — if useful for research (searching docs, finding similar skills, looking up best practices), research in parallel via the Task tool (using `general` or `explore` subagent types) if available, otherwise inline. Come prepared with context to reduce burden on the user.
 

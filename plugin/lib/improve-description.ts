@@ -32,7 +32,7 @@ async function callOpenCode(
   writeFileSync(tmpPath, prompt)
 
   try {
-    const cmd = ["opencode", "run"]
+    const cmd = ["opencode", "run", "--format", "json"]
     if (model) cmd.push("--model", model)
     cmd.push("--file", tmpPath, "Process the attached file and follow its instructions.")
 
@@ -42,47 +42,118 @@ async function callOpenCode(
       env: { ...process.env },
     })
 
-    // Collect stdout with timeout
+    // Collect stdout with timeout. Prefer structured text events from JSON mode.
     let stdout = ""
+    let lineBuffer = ""
+    const textParts: string[] = []
     const decoder = new TextDecoder()
     const reader = proc.stdout.getReader()
-    const deadline = Date.now() + timeout * 1000
+    const stderrReader = proc.stderr.getReader()
+    const stderrDecoder = new TextDecoder()
+    const maxStderrChars = 64 * 1024
+    let stderrTail = ""
+    const timeoutMs = timeout * 1000
 
-    try {
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now()
-        const result = await Promise.race([
-          reader.read(),
-          new Promise<{ done: true; value: undefined }>((resolve) =>
-            setTimeout(() => resolve({ done: true, value: undefined }), remaining),
-          ),
-        ])
-        if (result.done) break
-        if (result.value) stdout += decoder.decode(result.value, { stream: true })
+    const stderrDrained = (async () => {
+      try {
+        while (true) {
+          const result = await stderrReader.read()
+          if (result.done) break
+          if (!result.value) continue
+
+          stderrTail += stderrDecoder.decode(result.value, { stream: true })
+          if (stderrTail.length > maxStderrChars) {
+            stderrTail = stderrTail.slice(-maxStderrChars)
+          }
+        }
+
+        stderrTail += stderrDecoder.decode()
+        if (stderrTail.length > maxStderrChars) {
+          stderrTail = stderrTail.slice(-maxStderrChars)
+        }
+      } finally {
+        stderrReader.releaseLock()
       }
-    } finally {
-      reader.releaseLock()
+    })()
+
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+
+      try {
+        const event = JSON.parse(trimmed) as Record<string, unknown>
+        if (event.type !== "text") return
+        const part = event.part as Record<string, unknown> | undefined
+        if (!part || typeof part !== "object") return
+        const text = part.text
+        if (typeof text === "string") {
+          textParts.push(text)
+        }
+      } catch {
+        // Ignore non-JSON lines.
+      }
+    }
+
+    const flushLines = (final = false) => {
+      let idx = lineBuffer.indexOf("\n")
+      while (idx !== -1) {
+        const line = lineBuffer.slice(0, idx)
+        lineBuffer = lineBuffer.slice(idx + 1)
+        consumeLine(line)
+        idx = lineBuffer.indexOf("\n")
+      }
+
+      if (final && lineBuffer.trim()) {
+        consumeLine(lineBuffer)
+        lineBuffer = ""
+      }
+    }
+
+    const timeoutId = setTimeout(() => {
       if (proc.exitCode === null) {
         proc.kill()
       }
-      await proc.exited
-    }
+    }, timeoutMs)
 
-    // Check stderr for errors
-    const stderrReader = proc.stderr.getReader()
-    let stderr = ""
     try {
       while (true) {
-        const r = await stderrReader.read()
-        if (r.done) break
-        if (r.value) stderr += decoder.decode(r.value, { stream: true })
+        const result = await reader.read()
+        if (result.done) break
+        if (result.value) {
+          const chunk = decoder.decode(result.value, { stream: true })
+          stdout += chunk
+          lineBuffer += chunk
+          flushLines()
+        }
       }
+
+      const finalChunk = decoder.decode()
+      if (finalChunk) {
+        stdout += finalChunk
+        lineBuffer += finalChunk
+      }
+
+      flushLines(true)
+      await proc.exited
+      await stderrDrained
     } finally {
-      stderrReader.releaseLock()
+      clearTimeout(timeoutId)
+      reader.releaseLock()
+
+      if (proc.exitCode === null) {
+        proc.kill()
+        await proc.exited
+      }
+
+      await stderrDrained.catch(() => undefined)
     }
 
     if (proc.exitCode !== 0 && proc.exitCode !== null) {
-      throw new Error(`opencode run exited ${proc.exitCode}\nstderr: ${stderr}`)
+      throw new Error(`opencode run exited ${proc.exitCode}\nstderr: ${stderrTail}`)
+    }
+
+    if (textParts.length > 0) {
+      return textParts.join("")
     }
 
     return stdout

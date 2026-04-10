@@ -15,12 +15,17 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { join, dirname } from "path"
+import { homedir } from "os"
 import {
   existsSync,
   mkdirSync,
   copyFileSync,
+  rmSync,
   readdirSync,
+  readFileSync,
+  renameSync,
   statSync,
+  writeFileSync,
 } from "fs"
 
 import { validateSkill } from "./lib/validate"
@@ -45,6 +50,19 @@ const TEMPLATES_DIR = join(dirname(import.meta.path), "templates")
 // ---------------------------------------------------------------------------
 
 const BUNDLED_SKILL_DIR = join(dirname(import.meta.path), "skill")
+const PACKAGE_JSON_PATH = join(dirname(import.meta.path), "package.json")
+const INSTALL_VERSION_FILE = ".opencode-skill-creator-version"
+
+const PACKAGE_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf-8")) as {
+      version?: string
+    }
+    return pkg.version ?? "0.0.0"
+  } catch {
+    return "0.0.0"
+  }
+})()
 
 // ---------------------------------------------------------------------------
 // Auto-install: copy bundled skill files to the global skills directory
@@ -66,20 +84,62 @@ function copyDirRecursive(src: string, dest: string): void {
 function ensureSkillInstalled(): void {
   // Determine the global skills directory
   const configDir =
-    process.env.XDG_CONFIG_HOME || join(process.env.HOME || "~", ".config")
+    process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
   const skillsDir = join(configDir, "opencode", "skills", "skill-creator")
   const marker = join(skillsDir, "SKILL.md")
-
-  // Skip if skill is already installed
-  if (existsSync(marker)) return
+  const versionFile = join(skillsDir, INSTALL_VERSION_FILE)
+  const userSkillFile = join(skillsDir, "SKILL.md")
+  const userSkillBackup = join(skillsDir, "SKILL.md.user-backup")
 
   // Skip if bundled skill files are missing (e.g., local dev without skill/)
   if (!existsSync(BUNDLED_SKILL_DIR)) return
 
+  // Install/update when missing, or when package version changed.
+  let installedVersion = ""
+  if (existsSync(versionFile)) {
+    try {
+      installedVersion = readFileSync(versionFile, "utf-8").trim()
+    } catch {
+      installedVersion = ""
+    }
+  }
+
+  const shouldInstall = !existsSync(marker) || installedVersion !== PACKAGE_VERSION
+  if (!shouldInstall) return
+
+  const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
   try {
-    copyDirRecursive(BUNDLED_SKILL_DIR, skillsDir)
+    copyDirRecursive(BUNDLED_SKILL_DIR, tmpInstallDir)
+
+    // Preserve user-customized SKILL.md when updating.
+    if (existsSync(userSkillFile)) {
+      try {
+        copyFileSync(userSkillFile, userSkillBackup)
+      } catch {
+        // Ignore backup failures; continue install.
+      }
+
+      try {
+        copyFileSync(userSkillFile, join(tmpInstallDir, "SKILL.md"))
+      } catch {
+        // If copy fails, continue with bundled SKILL.md.
+      }
+    }
+
+    if (!existsSync(skillsDir)) {
+      renameSync(tmpInstallDir, skillsDir)
+    } else {
+      copyDirRecursive(tmpInstallDir, skillsDir)
+    }
+
+    writeFileSync(versionFile, `${PACKAGE_VERSION}\n`)
   } catch {
     // Silently fail — the user can always install manually
+  } finally {
+    if (existsSync(tmpInstallDir)) {
+      rmSync(tmpInstallDir, { recursive: true, force: true })
+    }
   }
 }
 
@@ -130,7 +190,12 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
         async execute(args) {
           const meta = parseSkillMd(args.skillPath)
           return JSON.stringify(
-            { name: meta.name, description: meta.description, contentLength: meta.fullContent.length },
+            {
+              name: meta.name,
+              description: meta.description,
+              content: meta.fullContent,
+              contentLength: meta.fullContent.length,
+            },
             null,
             2,
           )
@@ -157,15 +222,15 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           numWorkers: tool.schema
             .number()
             .optional()
-            .describe("Parallel workers (default: 4)"),
+            .describe("Parallel workers (default: 10)"),
           timeout: tool.schema
             .number()
             .optional()
-            .describe("Timeout per query in seconds (default: 60)"),
+            .describe("Timeout per query in seconds (default: 30)"),
           runsPerQuery: tool.schema
             .number()
             .optional()
-            .describe("Number of runs per query for reliability (default: 1)"),
+            .describe("Number of runs per query for reliability (default: 3)"),
           triggerThreshold: tool.schema
             .number()
             .optional()
@@ -181,6 +246,11 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             readFileSync(args.evalSetPath, "utf-8"),
           )
 
+          const validation = validateSkill(args.skillPath)
+          if (!validation.valid) {
+            throw new Error(`Invalid skill at ${args.skillPath}: ${validation.message}`)
+          }
+
           const meta = parseSkillMd(args.skillPath)
           const projectRoot = findProjectRoot()
 
@@ -188,10 +258,10 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             evalSet,
             skillName: meta.name,
             description: args.descriptionOverride ?? meta.description,
-            numWorkers: args.numWorkers ?? 4,
-            timeout: args.timeout ?? 60,
+            numWorkers: args.numWorkers ?? 10,
+            timeout: args.timeout ?? 30,
             projectRoot,
-            runsPerQuery: args.runsPerQuery ?? 1,
+            runsPerQuery: args.runsPerQuery ?? 3,
             triggerThreshold: args.triggerThreshold ?? 0.5,
             model: args.model,
           })
@@ -277,11 +347,11 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           numWorkers: tool.schema
             .number()
             .optional()
-            .describe("Parallel workers (default: 4)"),
+            .describe("Parallel workers (default: 10)"),
           timeout: tool.schema
             .number()
             .optional()
-            .describe("Timeout per query in seconds (default: 60)"),
+            .describe("Timeout per query in seconds (default: 30)"),
           runsPerQuery: tool.schema
             .number()
             .optional()
@@ -317,8 +387,8 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             evalSet,
             skillPath: args.skillPath,
             descriptionOverride: args.descriptionOverride ?? null,
-            numWorkers: args.numWorkers ?? 4,
-            timeout: args.timeout ?? 60,
+            numWorkers: args.numWorkers ?? 10,
+            timeout: args.timeout ?? 30,
             maxIterations: args.maxIterations ?? 5,
             runsPerQuery: args.runsPerQuery ?? 3,
             triggerThreshold: args.triggerThreshold ?? 0.5,

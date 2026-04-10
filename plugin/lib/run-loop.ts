@@ -97,6 +97,17 @@ export interface RunLoopOptions {
 
 export interface LoopHistoryEntry extends HistoryEntry {
   iteration: number
+  description: string
+  train_passed: number
+  train_failed: number
+  train_total: number
+  test_passed: number | null
+  test_failed: number | null
+  test_total: number | null
+  passed: number
+  failed: number
+  total: number
+  results: EvalResultItem[]
   train_results?: EvalResultItem[]
   test_results?: EvalResultItem[] | null
 }

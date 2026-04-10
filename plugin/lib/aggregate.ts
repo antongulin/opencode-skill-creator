@@ -45,6 +45,65 @@ export interface BenchmarkOutput {
   notes: string[]
 }
 
+interface LoadResultsOutput {
+  results: Record<string, RunResult[]>
+  evalIds: Array<number | string>
+}
+
+function compareEvalIds(a: number | string, b: number | string): number {
+  const parseNumeric = (value: number | string): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value !== "string") return null
+    const trimmed = value.trim()
+    if (!/^-?\d+$/.test(trimmed)) return null
+    const num = Number(trimmed)
+    return Number.isFinite(num) ? num : null
+  }
+
+  const aNum = parseNumeric(a)
+  const bNum = parseNumeric(b)
+  if (aNum !== null && bNum !== null) return aNum - bNum
+
+  return String(a).localeCompare(String(b), undefined, { numeric: true })
+}
+
+function computeRunsPerConfiguration(
+  results: Record<string, RunResult[]>,
+  evalIds: Array<number | string>,
+): number {
+  const counts: number[] = []
+
+  for (const runs of Object.values(results)) {
+    if (runs.length === 0) {
+      counts.push(0)
+      continue
+    }
+
+    const byEval = new Map<string, Set<number>>()
+
+    for (const run of runs) {
+      const evalKey = String(run.eval_id)
+      if (!byEval.has(evalKey)) {
+        byEval.set(evalKey, new Set<number>())
+      }
+      byEval.get(evalKey)!.add(run.run_number)
+    }
+
+    if (evalIds.length === 0) {
+      counts.push(0)
+      continue
+    }
+
+    for (const evalId of evalIds) {
+      const set = byEval.get(String(evalId))
+      counts.push(set ? set.size : 0)
+    }
+  }
+
+  if (counts.length === 0) return 0
+  return Math.min(...counts)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -86,7 +145,7 @@ function sortedDirs(dir: string, pattern?: RegExp): string[] {
 // Load run results
 // ---------------------------------------------------------------------------
 
-function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
+function loadRunResults(benchmarkDir: string): LoadResultsOutput {
   // Support both layouts
   const runsDir = join(benchmarkDir, "runs")
   let searchDir: string
@@ -98,10 +157,11 @@ function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
     console.error(
       `No eval directories found in ${benchmarkDir} or ${runsDir}`,
     )
-    return {}
+    return { results: {}, evalIds: [] }
   }
 
   const results: Record<string, RunResult[]> = {}
+  const evalIds = new Set<number | string>()
 
   for (const [evalIdx, evalDir] of sortedDirs(searchDir, /^eval-/).entries()) {
     const metadataPath = join(evalDir, "eval_metadata.json")
@@ -114,12 +174,15 @@ function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
         /* ignore */
       }
     } else {
-      try {
-        evalId = parseInt(basename(evalDir).split("-")[1], 10)
-      } catch {
-        /* ignore */
+      const parsedEvalId = Number.parseInt(
+        basename(evalDir).split("-")[1] ?? "",
+        10,
+      )
+      if (Number.isFinite(parsedEvalId)) {
+        evalId = parsedEvalId
       }
     }
+    let hasLoadedRuns = false
 
     // Discover config directories dynamically
     for (const configDir of sortedDirs(evalDir)) {
@@ -130,7 +193,16 @@ function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
       if (!results[config]) results[config] = []
 
       for (const runDir of sortedDirs(configDir, /^run-/)) {
-        const runNumber = parseInt(basename(runDir).split("-")[1], 10)
+        const parsedRunNumber = Number.parseInt(
+          basename(runDir).split("-")[1] ?? "",
+          10,
+        )
+        if (!Number.isFinite(parsedRunNumber)) {
+          console.error(`Warning: Invalid run directory name: ${runDir}`)
+          continue
+        }
+
+        const runNumber = parsedRunNumber
         const gradingFile = join(runDir, "grading.json")
 
         if (!existsSync(gradingFile)) {
@@ -200,11 +272,19 @@ function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
         result.notes = notes
 
         results[config].push(result)
+        hasLoadedRuns = true
       }
+    }
+
+    if (hasLoadedRuns) {
+      evalIds.add(evalId)
     }
   }
 
-  return results
+  return {
+    results,
+    evalIds: [...evalIds].sort(compareEvalIds),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +350,8 @@ export function generateBenchmark(
   skillName = "",
   skillPath = "",
 ): BenchmarkOutput {
-  const results = loadRunResults(benchmarkDir)
+  const loaded = loadRunResults(benchmarkDir)
+  const results = loaded.results
   const runSummary = aggregateResults(results)
 
   // Build runs array
@@ -297,14 +378,7 @@ export function generateBenchmark(
     }
   }
 
-  // Determine eval IDs
-  const evalIds = [
-    ...new Set(
-      Object.values(results)
-        .flat()
-        .map((r) => r.eval_id),
-    ),
-  ].sort()
+  const runsPerConfiguration = computeRunsPerConfiguration(results, loaded.evalIds)
 
   return {
     metadata: {
@@ -313,8 +387,8 @@ export function generateBenchmark(
       executor_model: "<model-name>",
       analyzer_model: "<model-name>",
       timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-      evals_run: evalIds,
-      runs_per_configuration: 3,
+      evals_run: loaded.evalIds,
+      runs_per_configuration: runsPerConfiguration,
     },
     runs,
     run_summary: runSummary,

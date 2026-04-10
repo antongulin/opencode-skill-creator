@@ -11,9 +11,10 @@
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs"
-import { join } from "path"
+import { dirname, join, parse } from "path"
 import { randomBytes } from "crypto"
-import { parseSkillMd } from "./utils"
+
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,6 +31,8 @@ export interface EvalResultItem {
   trigger_rate: number
   triggers: number
   runs: number
+  successful_runs: number
+  errors: number
   pass: boolean
 }
 
@@ -41,6 +44,8 @@ export interface EvalOutput {
     total: number
     passed: number
     failed: number
+    run_errors: number
+    queries_with_errors: number
   }
 }
 
@@ -54,12 +59,12 @@ export interface EvalOutput {
  */
 export function findProjectRoot(cwd?: string): string {
   let current = cwd ?? process.cwd()
-  const { root } = require("path").parse(current)
+  const { root } = parse(current)
 
   while (true) {
     if (existsSync(join(current, ".opencode"))) return current
     if (existsSync(join(current, ".claude"))) return current
-    const parent = require("path").dirname(current)
+    const parent = dirname(current)
     if (parent === current || parent === root) break
     current = parent
   }
@@ -78,6 +83,12 @@ async function runSingleQuery(
   projectRoot: string,
   model?: string,
 ): Promise<boolean> {
+  if (!SKILL_NAME_RE.test(skillName)) {
+    throw new Error(
+      `Invalid skill name "${skillName}". Expected kebab-case (lowercase letters, numbers, and hyphens only).`,
+    )
+  }
+
   const uniqueId = randomBytes(4).toString("hex")
   const cleanName = `${skillName}-skill-${uniqueId}`
   const skillsDir = join(projectRoot, ".opencode", "skills", cleanName)
@@ -102,44 +113,134 @@ async function runSingleQuery(
     ].join("\n")
     writeFileSync(skillFile, skillContent)
 
-    const cmd = ["opencode", "run"]
+    const cmd = ["opencode", "run", "--format", "json"]
     if (model) cmd.push("--model", model)
     cmd.push(query)
 
     const proc = Bun.spawn(cmd, {
       cwd: projectRoot,
       stdout: "pipe",
-      stderr: "ignore",
+      stderr: "pipe",
       env: { ...process.env },
     })
 
-    // Collect output with timeout
+    // Collect output with timeout and detect skill invocation from JSON events.
     let buffer = ""
+    let triggered = false
     const decoder = new TextDecoder()
     const reader = proc.stdout.getReader()
-    const deadline = Date.now() + timeout * 1000
+    const stderrReader = proc.stderr.getReader()
+    const stderrDecoder = new TextDecoder()
+    const maxStderrChars = 64 * 1024
+    let stderrTail = ""
+    const timeoutMs = timeout * 1000
+
+    const stderrDrained = (async () => {
+      try {
+        while (true) {
+          const result = await stderrReader.read()
+          if (result.done) break
+          if (!result.value) continue
+
+          stderrTail += stderrDecoder.decode(result.value, { stream: true })
+          if (stderrTail.length > maxStderrChars) {
+            stderrTail = stderrTail.slice(-maxStderrChars)
+          }
+        }
+
+        stderrTail += stderrDecoder.decode()
+        if (stderrTail.length > maxStderrChars) {
+          stderrTail = stderrTail.slice(-maxStderrChars)
+        }
+      } finally {
+        stderrReader.releaseLock()
+      }
+    })()
+
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+
+      try {
+        const event = JSON.parse(trimmed) as Record<string, unknown>
+        if (event.type !== "tool_use") return
+
+        const part = event.part as Record<string, unknown> | undefined
+        if (!part || typeof part !== "object") return
+
+        const toolName = typeof part.tool === "string" ? part.tool : ""
+        if (toolName !== "skill" && toolName !== "read") return
+
+        const serialized = JSON.stringify(part)
+        if (serialized.includes(cleanName)) {
+          triggered = true
+        }
+      } catch {
+        // Ignore non-JSON lines and malformed events.
+      }
+    }
+
+    const flushBuffer = (final = false) => {
+      let newlineIndex = buffer.indexOf("\n")
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex)
+        buffer = buffer.slice(newlineIndex + 1)
+        consumeLine(line)
+        newlineIndex = buffer.indexOf("\n")
+      }
+
+      if (final && buffer.trim()) {
+        consumeLine(buffer)
+        buffer = ""
+      }
+    }
+
+    const timeoutId = setTimeout(() => {
+      if (proc.exitCode === null) {
+        proc.kill()
+      }
+    }, timeoutMs)
 
     try {
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now()
-        const result = await Promise.race([
-          reader.read(),
-          new Promise<{ done: true; value: undefined }>((resolve) =>
-            setTimeout(() => resolve({ done: true, value: undefined }), remaining),
-          ),
-        ])
+      while (true) {
+        const result = await reader.read()
         if (result.done) break
         if (result.value) {
           buffer += decoder.decode(result.value, { stream: true })
+          flushBuffer()
         }
       }
-    } finally {
-      reader.releaseLock()
-      proc.kill()
+
+      const finalChunk = decoder.decode()
+      if (finalChunk) {
+        buffer += finalChunk
+      }
+
+      flushBuffer(true)
       await proc.exited
+      await stderrDrained
+
+      if ((proc.exitCode ?? 0) !== 0) {
+        const cleanedStderr = stderrTail.trim()
+        throw new Error(
+          cleanedStderr
+            ? `opencode run exited ${proc.exitCode}: ${cleanedStderr}`
+            : `opencode run exited ${proc.exitCode}`,
+        )
+      }
+    } finally {
+      clearTimeout(timeoutId)
+      reader.releaseLock()
+
+      if (proc.exitCode === null) {
+        proc.kill()
+        await proc.exited
+      }
+
+      await stderrDrained.catch(() => undefined)
     }
 
-    return buffer.includes(cleanName)
+    return triggered
   } finally {
     // Clean up the temporary skill directory
     if (existsSync(skillsDir)) {
@@ -178,7 +279,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     numWorkers,
     timeout,
     projectRoot,
-    runsPerQuery = 1,
+    runsPerQuery = 3,
     triggerThreshold = 0.5,
     model,
   } = opts
@@ -193,7 +294,12 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
   }
 
   // Concurrency-limited execution
-  const jobResults: { query: string; triggered: boolean; item: EvalItem }[] = []
+  const jobResults: {
+    query: string
+    triggered: boolean
+    item: EvalItem
+    errored: boolean
+  }[] = []
   let idx = 0
 
   async function worker() {
@@ -209,10 +315,20 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
           projectRoot,
           model,
         )
-        jobResults.push({ query: job.item.query, triggered, item: job.item })
+        jobResults.push({
+          query: job.item.query,
+          triggered,
+          item: job.item,
+          errored: false,
+        })
       } catch (e) {
         console.error(`Warning: query failed: ${e}`)
-        jobResults.push({ query: job.item.query, triggered: false, item: job.item })
+        jobResults.push({
+          query: job.item.query,
+          triggered: false,
+          item: job.item,
+          errored: true,
+        })
       }
     }
   }
@@ -222,21 +338,27 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
 
   // Aggregate per-query
   const queryTriggers: Map<string, boolean[]> = new Map()
+  const queryErrors: Map<string, number> = new Map()
   const queryItems: Map<string, EvalItem> = new Map()
   for (const jr of jobResults) {
     if (!queryTriggers.has(jr.query)) queryTriggers.set(jr.query, [])
     queryTriggers.get(jr.query)!.push(jr.triggered)
+    queryErrors.set(jr.query, (queryErrors.get(jr.query) ?? 0) + (jr.errored ? 1 : 0))
     queryItems.set(jr.query, jr.item)
   }
 
   const results: EvalResultItem[] = []
   for (const [query, triggers] of queryTriggers) {
     const item = queryItems.get(query)!
-    const triggerRate = triggers.filter(Boolean).length / triggers.length
+    const errors = queryErrors.get(query) ?? 0
+    const successfulRuns = triggers.length - errors
+    const triggerRate =
+      successfulRuns > 0 ? triggers.filter(Boolean).length / successfulRuns : 0
     const shouldTrigger = item.should_trigger
-    const didPass = shouldTrigger
+    const thresholdPass = shouldTrigger
       ? triggerRate >= triggerThreshold
       : triggerRate < triggerThreshold
+    const didPass = errors === 0 && thresholdPass
 
     results.push({
       query,
@@ -244,11 +366,15 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
       trigger_rate: triggerRate,
       triggers: triggers.filter(Boolean).length,
       runs: triggers.length,
+      successful_runs: successfulRuns,
+      errors,
       pass: didPass,
     })
   }
 
   const passed = results.filter((r) => r.pass).length
+  const runErrors = results.reduce((acc, r) => acc + r.errors, 0)
+  const queriesWithErrors = results.filter((r) => r.errors > 0).length
 
   return {
     skill_name: skillName,
@@ -258,6 +384,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
       total: results.length,
       passed,
       failed: results.length - passed,
+      run_errors: runErrors,
+      queries_with_errors: queriesWithErrors,
     },
   }
 }
