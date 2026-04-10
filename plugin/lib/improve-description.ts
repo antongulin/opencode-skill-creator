@@ -34,7 +34,9 @@ async function callOpenCode(
   try {
     const cmd = ["opencode", "run", "--format", "json"]
     if (model) cmd.push("--model", model)
-    cmd.push("--file", tmpPath, "Process the attached file and follow its instructions.")
+    // Use `--` to terminate option parsing so the trailing prompt is treated
+    // as a positional message instead of another --file value.
+    cmd.push("--file", tmpPath, "--", "Process the attached file and follow its instructions.")
 
     const proc = Bun.spawn(cmd, {
       stdout: "pipe",

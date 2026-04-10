@@ -227,6 +227,19 @@ The review launch tools now enforce paired comparison data by default:
 - Override only when intentionally reviewing partial data by passing `allowPartial: true`.
 - If `benchmarkPath` is omitted, the tools auto-generate `benchmark.json` and `benchmark.md` in the workspace.
 
+### Skill draft staging (recommended)
+
+When creating new skills, use a staging path in the system temp directory outside your current repository:
+
+- Unix/macOS draft skill path: `/tmp/opencode-skills/<skill-name>/` (or `$TMPDIR/opencode-skills/<skill-name>/`)
+- Unix/macOS eval workspace path: `/tmp/opencode-skills/<skill-name>-workspace/`
+- Windows draft/eval paths: `%TEMP%\\opencode-skills\\<skill-name>\\` and `%TEMP%\\opencode-skills\\<skill-name>-workspace\\`
+- Install only the final validated skill to:
+  - project: `.opencode/skills/<skill-name>/`
+  - global: `~/.config/opencode/skills/<skill-name>/`
+
+This keeps plugin/source repositories clean while preserving the full eval loop.
+
 ## Usage
 
 Once installed, OpenCode will automatically detect the skill when you ask it to create or improve a skill. For example:
