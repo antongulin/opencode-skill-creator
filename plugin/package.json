@@ -20,7 +20,15 @@
     "opencode-plugin",
     "skill-creator",
     "ai-skills",
-    "agent-skills"
+    "agent-skills",
+    "eval",
+    "benchmark",
+    "description-optimization",
+    "skill-evaluation",
+    "llm",
+    "ai-agent",
+    "open-source",
+    "typescript"
   ],
   "repository": {
     "type": "git",

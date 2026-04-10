@@ -1,10 +1,34 @@
+<div align="center">
+
 # opencode-skill-creator
 
+**Create, test, and optimize OpenCode skills — from first draft to production-grade.**
+
 [![npm](https://img.shields.io/npm/v/opencode-skill-creator)](https://www.npmjs.com/package/opencode-skill-creator)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub stars](https://img.shields.io/github/stars/antongulin/opencode-skill-creator?style=social)](https://github.com/antongulin/opencode-skill-creator/stargazers)
 
-A **skill + plugin** for [OpenCode](https://opencode.ai) that helps you create, test, and optimize other OpenCode skills.
+A **skill + plugin** for [OpenCode](https://opencode.ai) that brings eval-driven development to AI agent skills — based on Anthropic's official [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) for Claude Code, ported to TypeScript and adapted for OpenCode's plugin architecture.
 
-This is a faithful adaptation of Anthropic's official [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) for Claude Code, fully rewritten to work with OpenCode's extensibility mechanisms. The Python scripts from the original have been ported to TypeScript and packaged as an OpenCode plugin with custom tools.
+[Install](#install) · [What it does](#what-it-does) · [Plugin tools](#plugin-tools) · [Usage](#usage) · [Architecture](#architecture)
+
+</div>
+
+---
+
+## Why this exists
+
+Creating AI agent skills is guesswork. You write a skill, test it manually, maybe tweak the description, and hope it triggers correctly. There's no systematic way to measure whether a skill works or to track improvements across iterations.
+
+opencode-skill-creator fixes this with **eval-driven development for skills**:
+
+- **Test** — Auto-generate eval test sets and measure trigger accuracy
+- **Optimize** — Iteratively improve skill descriptions with a train/test split
+- **Benchmark** — Quantitative comparison across iterations with variance analysis
+- **Review** — Built-in visual eval viewer for human-in-the-loop feedback
+- **Install** — Deploy validated skills to project or global config
+
+Based on Anthropic's proven methodology. Free for everyone. Works with any model OpenCode supports.
 
 ## Install
 
@@ -209,16 +233,29 @@ The plugin registers these custom tools that OpenCode can call:
 | `skill_parse` | Parse SKILL.md and extract name/description |
 | `skill_eval` | Test trigger accuracy for eval queries |
 | `skill_improve_description` | LLM-powered description improvement |
-| `skill_optimize_loop` | Full eval->improve optimization loop |
+| `skill_optimize_loop` | Full eval→improve optimization loop |
 | `skill_aggregate_benchmark` | Aggregate grading results into statistics |
 | `skill_generate_report` | Generate HTML optimization report |
 | `skill_serve_review` | Start the eval review viewer (HTTP server) |
 | `skill_stop_review` | Stop a running review server |
 | `skill_export_static_review` | Generate standalone HTML review file |
 
+### Description optimization loop
+
+The most impactful feature for skill quality. It treats skill descriptions as a search problem:
+
+1. Generates 20 test queries (should-trigger + should-not-trigger)
+2. Splits into 60% train / 40% test
+3. Runs each query 3 times for statistical reliability
+4. Analyzes failure patterns
+5. LLM proposes improved descriptions
+6. Re-evaluates on both train AND test sets
+7. Selects the best description by test score (prevents overfitting)
+8. Repeats up to 5 iterations
+
 ### Review workflow guard (strict by default)
 
-The review launch tools now enforce paired comparison data by default:
+The review launch tools enforce paired comparison data by default:
 
 - `skill_serve_review` and `skill_export_static_review` require each `eval-*` directory to include:
   - `with_skill`
@@ -233,7 +270,7 @@ When creating new skills, use a staging path in the system temp directory outsid
 
 - Unix/macOS draft skill path: `/tmp/opencode-skills/<skill-name>/` (or `$TMPDIR/opencode-skills/<skill-name>/`)
 - Unix/macOS eval workspace path: `/tmp/opencode-skills/<skill-name>-workspace/`
-- Windows draft/eval paths: `%TEMP%\\opencode-skills\\<skill-name>\\` and `%TEMP%\\opencode-skills\\<skill-name>-workspace\\`
+- Windows draft/eval paths: `%TEMP%\opencode-skills\<skill-name>\` and `%TEMP%\opencode-skills\<skill-name>-workspace\`
 - Install only the final validated skill to:
   - project: `.opencode/skills/<skill-name>/`
   - global: `~/.config/opencode/skills/<skill-name>/`
@@ -310,6 +347,10 @@ opencode-skill-creator/
 | Dependencies | Python 3.11+, pyyaml | Bun (via OpenCode), @opencode-ai/plugin |
 | Packaging | `.skill` zip files | npm package + skill directory |
 | Subagents | Built-in subagent concept | Task tool with `general`/`explore` types |
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 

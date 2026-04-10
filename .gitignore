@@ -17,3 +17,11 @@
 # Local temp/export artifacts
 tmp/
 *.tmp
+
+# Marketing skills (project-level only)
+.opencode/
+.agents/
+
+# Marketing and promotional materials (not part of the project)
+promo/
+.github/DISCUSSION_TEMPLATE/
