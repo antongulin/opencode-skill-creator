@@ -160,10 +160,12 @@ function loadRunResults(benchmarkDir: string): LoadResultsOutput {
         /* ignore */
       }
     } else {
-      try {
-        evalId = parseInt(basename(evalDir).split("-")[1], 10)
-      } catch {
-        /* ignore */
+      const parsedEvalId = Number.parseInt(
+        basename(evalDir).split("-")[1] ?? "",
+        10,
+      )
+      if (Number.isFinite(parsedEvalId)) {
+        evalId = parsedEvalId
       }
     }
     let hasLoadedRuns = false
@@ -177,7 +179,16 @@ function loadRunResults(benchmarkDir: string): LoadResultsOutput {
       if (!results[config]) results[config] = []
 
       for (const runDir of sortedDirs(configDir, /^run-/)) {
-        const runNumber = parseInt(basename(runDir).split("-")[1], 10)
+        const parsedRunNumber = Number.parseInt(
+          basename(runDir).split("-")[1] ?? "",
+          10,
+        )
+        if (!Number.isFinite(parsedRunNumber)) {
+          console.error(`Warning: Invalid run directory name: ${runDir}`)
+          continue
+        }
+
+        const runNumber = parsedRunNumber
         const gradingFile = join(runDir, "grading.json")
 
         if (!existsSync(gradingFile)) {

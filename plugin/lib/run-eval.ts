@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs"
 import { dirname, join, parse } from "path"
 import { randomBytes } from "crypto"
 
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -77,6 +79,12 @@ async function runSingleQuery(
   projectRoot: string,
   model?: string,
 ): Promise<boolean> {
+  if (!SKILL_NAME_RE.test(skillName)) {
+    throw new Error(
+      `Invalid skill name "${skillName}". Expected kebab-case (lowercase letters, numbers, and hyphens only).`,
+    )
+  }
+
   const uniqueId = randomBytes(4).toString("hex")
   const cleanName = `${skillName}-skill-${uniqueId}`
   const skillsDir = join(projectRoot, ".opencode", "skills", cleanName)
