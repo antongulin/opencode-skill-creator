@@ -1,13 +1,14 @@
 {
   "name": "opencode-skill-creator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenCode plugin for skill creation — custom tools for validation, evaluation, description optimization, benchmarking, and review serving.",
   "type": "module",
   "main": "./skill-creator.ts",
   "files": [
     "skill-creator.ts",
     "lib/",
-    "templates/"
+    "templates/",
+    "skill/"
   ],
   "keywords": [
     "opencode",

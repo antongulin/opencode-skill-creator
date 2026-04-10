@@ -15,6 +15,13 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { join, dirname } from "path"
+import {
+  existsSync,
+  mkdirSync,
+  copyFileSync,
+  readdirSync,
+  statSync,
+} from "fs"
 
 import { validateSkill } from "./lib/validate"
 import { parseSkillMd } from "./lib/utils"
@@ -34,6 +41,49 @@ import type { EvalItem } from "./lib/run-eval"
 const TEMPLATES_DIR = join(dirname(import.meta.path), "templates")
 
 // ---------------------------------------------------------------------------
+// Bundled skill directory (shipped inside the npm package)
+// ---------------------------------------------------------------------------
+
+const BUNDLED_SKILL_DIR = join(dirname(import.meta.path), "skill")
+
+// ---------------------------------------------------------------------------
+// Auto-install: copy bundled skill files to the global skills directory
+// ---------------------------------------------------------------------------
+
+function copyDirRecursive(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true })
+  for (const entry of readdirSync(src)) {
+    const srcPath = join(src, entry)
+    const destPath = join(dest, entry)
+    if (statSync(srcPath).isDirectory()) {
+      copyDirRecursive(srcPath, destPath)
+    } else {
+      copyFileSync(srcPath, destPath)
+    }
+  }
+}
+
+function ensureSkillInstalled(): void {
+  // Determine the global skills directory
+  const configDir =
+    process.env.XDG_CONFIG_HOME || join(process.env.HOME || "~", ".config")
+  const skillsDir = join(configDir, "opencode", "skills", "skill-creator")
+  const marker = join(skillsDir, "SKILL.md")
+
+  // Skip if skill is already installed
+  if (existsSync(marker)) return
+
+  // Skip if bundled skill files are missing (e.g., local dev without skill/)
+  if (!existsSync(BUNDLED_SKILL_DIR)) return
+
+  try {
+    copyDirRecursive(BUNDLED_SKILL_DIR, skillsDir)
+  } catch {
+    // Silently fail — the user can always install manually
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Track running review servers so they can be stopped
 // ---------------------------------------------------------------------------
 
@@ -44,6 +94,9 @@ const activeServers: Map<string, { stop: () => void; url: string }> = new Map()
 // ---------------------------------------------------------------------------
 
 export const SkillCreatorPlugin: Plugin = async (ctx) => {
+  // Auto-install bundled skill files to ~/.config/opencode/skills/skill-creator/
+  ensureSkillInstalled()
+
   return {
     tool: {
       // ---------------------------------------------------------------

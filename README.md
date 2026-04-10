@@ -1,19 +1,44 @@
 # opencode-skill-creator
 
+[![npm](https://img.shields.io/npm/v/opencode-skill-creator)](https://www.npmjs.com/package/opencode-skill-creator)
+
 A **skill + plugin** for [OpenCode](https://opencode.ai) that helps you create, test, and optimize other OpenCode skills.
 
 This is a faithful adaptation of Anthropic's official [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) for Claude Code, fully rewritten to work with OpenCode's extensibility mechanisms. The Python scripts from the original have been ported to TypeScript and packaged as an OpenCode plugin with custom tools.
 
-## Architecture
+## Install
 
-This project has two components:
+### For humans
 
-| Component | What it is | How it's installed |
-|-----------|-----------|-------------------|
-| **Skill** (`skill-creator/`) | Markdown instructions that tell the agent how to create, evaluate, and improve skills | Copied to `.opencode/skills/` |
-| **Plugin** (`plugin/`) | TypeScript module that registers custom tools for validation, eval, benchmarking, and review | Installed via npm or copied to `.opencode/plugins/` |
+1. Open your project's `opencode.json` (or create one in your project root)
+2. Add `"opencode-skill-creator"` to the `plugin` array:
 
-The skill provides the workflow knowledge; the plugin provides the executable tools the agent calls during that workflow.
+```json
+{
+  "plugin": ["opencode-skill-creator"]
+}
+```
+
+> If you already have other plugins, just append to the list:
+> `"plugin": ["other-plugin", "opencode-skill-creator"]`
+
+3. Restart OpenCode
+
+On first startup, OpenCode will:
+- Download and install the plugin from npm automatically
+- The plugin will copy the skill files to `~/.config/opencode/skills/skill-creator/`
+
+You're done. Ask OpenCode to create a skill and it will take it from there.
+
+### For LLMs / automation
+
+Add `opencode-skill-creator` to the `plugin` array in `opencode.json`:
+
+```json
+{ "plugin": ["opencode-skill-creator"] }
+```
+
+The plugin auto-installs the skill on first run. No additional steps needed.
 
 ## What it does
 
@@ -37,79 +62,12 @@ The plugin registers these custom tools that OpenCode can call:
 | `skill_parse` | Parse SKILL.md and extract name/description |
 | `skill_eval` | Test trigger accuracy for eval queries |
 | `skill_improve_description` | LLM-powered description improvement |
-| `skill_optimize_loop` | Full eval→improve optimization loop |
+| `skill_optimize_loop` | Full eval->improve optimization loop |
 | `skill_aggregate_benchmark` | Aggregate grading results into statistics |
 | `skill_generate_report` | Generate HTML optimization report |
 | `skill_serve_review` | Start the eval review viewer (HTTP server) |
 | `skill_stop_review` | Stop a running review server |
 | `skill_export_static_review` | Generate standalone HTML review file |
-
-## Installation
-
-### Prerequisites
-
-- [OpenCode](https://opencode.ai) CLI installed and configured
-
-### Step 1: Install the plugin (via npm)
-
-Add the plugin to your `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-skill-creator"]
-}
-```
-
-OpenCode will automatically install it via Bun at startup.
-
-### Step 2: Install the skill
-
-The skill (markdown instructions + templates) must be copied into your skills directory. Clone this repo and copy the `skill-creator/` directory:
-
-```bash
-git clone https://github.com/antongulin/opencode-skill-creator.git
-```
-
-**Global (recommended — available in all projects):**
-
-```bash
-cp -r opencode-skill-creator/skill-creator/ ~/.config/opencode/skills/skill-creator/
-```
-
-**Project-level (available only in one project):**
-
-```bash
-cp -r opencode-skill-creator/skill-creator/ .opencode/skills/skill-creator/
-```
-
-### Step 3: Verify
-
-Open OpenCode and ask it to create a skill. It should automatically detect and load the skill-creator, and the plugin tools (`skill_validate`, `skill_eval`, etc.) should be available.
-
-### Alternative: Manual plugin installation
-
-If you prefer not to use npm, you can copy the plugin directory directly:
-
-```bash
-# Global
-cp -r opencode-skill-creator/plugin/ ~/.config/opencode/plugins/skill-creator/
-
-# Or project-level
-cp -r opencode-skill-creator/plugin/ .opencode/plugins/skill-creator/
-```
-
-When installed locally, add a `package.json` in your `.opencode/` (or `~/.config/opencode/`) directory with the peer dependency:
-
-```json
-{
-  "dependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
-  }
-}
-```
-
-OpenCode runs `bun install` at startup to resolve these.
 
 ## Usage
 
@@ -122,13 +80,51 @@ Once installed, OpenCode will automatically detect the skill when you ask it to 
 
 OpenCode will load the skill-creator instructions and use the plugin tools to walk through the full workflow.
 
+## Architecture
+
+This project has two components:
+
+| Component | What it is |
+|-----------|-----------|
+| **Skill** | Markdown instructions (SKILL.md + agents + templates) that tell the agent how to create, evaluate, and improve skills |
+| **Plugin** | TypeScript module that registers custom tools for validation, eval, benchmarking, and review |
+
+The skill provides the workflow knowledge; the plugin provides the executable tools the agent calls during that workflow.
+
+On first startup, the plugin automatically copies the bundled skill files to `~/.config/opencode/skills/skill-creator/`. If you need to reinstall the skill (e.g., after an update), delete that directory and restart OpenCode.
+
+## Manual installation
+
+If you prefer not to use npm, clone this repo and copy the files manually:
+
+```bash
+git clone https://github.com/antongulin/opencode-skill-creator.git
+cd opencode-skill-creator
+
+# Install the skill (global)
+cp -r skill-creator/ ~/.config/opencode/skills/skill-creator/
+
+# Install the plugin (global)
+cp -r plugin/ ~/.config/opencode/plugins/skill-creator/
+```
+
+When installed locally, add a `package.json` in your `~/.config/opencode/` directory:
+
+```json
+{
+  "dependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}
+```
+
 ## Project structure
 
 ```
 opencode-skill-creator/
 ├── README.md
 ├── LICENSE                            # Apache 2.0
-├── skill-creator/                     # The SKILL (copied to .opencode/skills/)
+├── skill-creator/                     # The SKILL
 │   ├── SKILL.md                       # Main skill instructions
 │   ├── agents/
 │   │   ├── grader.md                  # Assertion evaluation
@@ -141,6 +137,7 @@ opencode-skill-creator/
 └── plugin/                            # The PLUGIN (npm: opencode-skill-creator)
     ├── package.json                   # npm package metadata
     ├── skill-creator.ts               # Entry point — registers all tools
+    ├── skill/                         # Bundled copy of skill (auto-installed)
     ├── lib/
     │   ├── utils.ts                   # SKILL.md frontmatter parsing
     │   ├── validate.ts                # Skill structure validation
