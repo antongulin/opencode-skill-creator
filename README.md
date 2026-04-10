@@ -229,10 +229,11 @@ The review launch tools now enforce paired comparison data by default:
 
 ### Skill draft staging (recommended)
 
-When creating new skills, use a staging path outside your current repository by default:
+When creating new skills, use a staging path in the system temp directory outside your current repository:
 
-- Draft skill path: `/tmp/opencode-skills/<skill-name>/`
-- Eval workspace path: `/tmp/opencode-skills/<skill-name>-workspace/`
+- Unix/macOS draft skill path: `/tmp/opencode-skills/<skill-name>/` (or `$TMPDIR/opencode-skills/<skill-name>/`)
+- Unix/macOS eval workspace path: `/tmp/opencode-skills/<skill-name>-workspace/`
+- Windows draft/eval paths: `%TEMP%\\opencode-skills\\<skill-name>\\` and `%TEMP%\\opencode-skills\\<skill-name>-workspace\\`
 - Install only the final validated skill to:
   - project: `.opencode/skills/<skill-name>/`
   - global: `~/.config/opencode/skills/<skill-name>/`

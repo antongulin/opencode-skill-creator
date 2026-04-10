@@ -72,7 +72,7 @@ Check available MCPs — if useful for research (searching docs, finding similar
 
 ### Write the SKILL.md
 
-For new skills, default to a staging location instead of the current repo/worktree. Use a temp workspace like `/tmp/opencode-skills/<skill-name>/` unless the user explicitly requests another path. This avoids cluttering unrelated repositories during skill development.
+For new skills, default to a staging location instead of the current repo/worktree. Use the system temp directory unless the user explicitly requests another path (for example: Unix/macOS `/tmp/opencode-skills/<skill-name>/`, `$TMPDIR/opencode-skills/<skill-name>/`; Windows `%TEMP%\\opencode-skills\\<skill-name>\\`). This avoids cluttering unrelated repositories during skill development.
 
 Based on the user interview, fill in these components:
 
@@ -179,7 +179,7 @@ See `references/schemas.md` for the full schema (including the `assertions` fiel
 
 This section is one continuous sequence — don't stop partway through. Do NOT use `/skill-test` or any other testing skill.
 
-Put results in `<skill-name>-workspace/` next to the staged skill directory (for example `/tmp/opencode-skills/<skill-name>-workspace/`). Within the workspace, organize results by iteration (`iteration-1/`, `iteration-2/`, etc.) and within that, each test case gets a directory (`eval-0/`, `eval-1/`, etc.). Don't create all of this upfront — just create directories as you go.
+Put results in `<skill-name>-workspace/` next to the staged skill directory in the system temp area (for example: Unix/macOS `/tmp/opencode-skills/<skill-name>-workspace/`; Windows `%TEMP%\\opencode-skills\\<skill-name>-workspace\\`). Within the workspace, organize results by iteration (`iteration-1/`, `iteration-2/`, etc.) and within that, each test case gets a directory (`eval-0/`, `eval-1/`, etc.). Don't create all of this upfront — just create directories as you go.
 
 ### Step 1: Spawn all runs (with-skill AND baseline) in the same turn
 

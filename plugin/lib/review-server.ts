@@ -469,28 +469,38 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
       }
 
       if (req.method === "POST" && url.pathname === "/api/feedback") {
+        let body: unknown
         try {
-          const body = (await req.json()) as unknown
-          if (typeof body !== "object" || body === null || !("reviews" in body)) {
-            return new Response(
-              JSON.stringify({ error: "Expected JSON object with 'reviews' key" }),
-              {
-                status: 400,
-                headers: { "Content-Type": "application/json" },
-              },
-            )
-          }
-
-          writeFileSync(feedbackPath, JSON.stringify(body, null, 2) + "\n")
-          return new Response(JSON.stringify({ ok: true }), {
-            headers: { "Content-Type": "application/json" },
-          })
+          body = (await req.json()) as unknown
         } catch (e) {
           return new Response(JSON.stringify({ error: String(e) }), {
             status: 400,
             headers: { "Content-Type": "application/json" },
           })
         }
+
+        if (typeof body !== "object" || body === null || !("reviews" in body)) {
+          return new Response(
+            JSON.stringify({ error: "Expected JSON object with 'reviews' key" }),
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            },
+          )
+        }
+
+        try {
+          writeFileSync(feedbackPath, JSON.stringify(body, null, 2) + "\n")
+        } catch (e) {
+          return new Response(JSON.stringify({ error: String(e) }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          })
+        }
+
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        })
       }
 
       return new Response("Not Found", { status: 404 })
