@@ -216,6 +216,17 @@ The plugin registers these custom tools that OpenCode can call:
 | `skill_stop_review` | Stop a running review server |
 | `skill_export_static_review` | Generate standalone HTML review file |
 
+### Review workflow guard (strict by default)
+
+The review launch tools now enforce paired comparison data by default:
+
+- `skill_serve_review` and `skill_export_static_review` require each `eval-*` directory to include:
+  - `with_skill`
+  - baseline (`without_skill` or `old_skill`)
+- If pairs are missing, the tools fail fast with a clear list of missing items.
+- Override only when intentionally reviewing partial data by passing `allowPartial: true`.
+- If `benchmarkPath` is omitted, the tools auto-generate `benchmark.json` and `benchmark.md` in the workspace.
+
 ## Usage
 
 Once installed, OpenCode will automatically detect the skill when you ask it to create or improve a skill. For example:

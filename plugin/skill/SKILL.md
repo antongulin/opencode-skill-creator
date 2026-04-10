@@ -235,6 +235,8 @@ This is the only opportunity to capture this data — it comes through the task 
 
 Once all runs are done:
 
+Before launching review, enforce this gate: every eval must have paired comparison outputs (`with_skill` plus one baseline: `without_skill` or `old_skill`). Do not continue to review if pairs are missing unless the user explicitly asks to proceed with partial data.
+
 1. **Grade each run** — spawn a grader Task (using `general` subagent type), or grade inline, that reads `agents/grader.md` and evaluates each assertion against the outputs. Save results to `grading.json` in each run directory. The grading.json expectations array must use the fields `text`, `passed`, and `evidence` (not `name`/`met`/`details` or other variants) — the viewer depends on these exact field names. For assertions that can be checked programmatically, write and run a script rather than eyeballing it — scripts are faster, more reliable, and can be reused across iterations.
 
 2. **Aggregate into benchmark** — use the `skill_aggregate_benchmark` tool:
@@ -254,8 +256,13 @@ Put each with_skill version before its baseline counterpart.
      workspace: <workspace>/iteration-N
      skillName: "my-skill"
      benchmarkPath: <workspace>/iteration-N/benchmark.json
+     allowPartial: false
    ```
    For iteration 2+, also pass `previousWorkspace: <workspace>/iteration-<N-1>`.
+
+   If `benchmarkPath` is omitted, the tool auto-generates `benchmark.json` and `benchmark.md` inside the workspace before opening the viewer.
+
+   The default is strict (`allowPartial: false`): it fails fast when eval pairs are incomplete. Use `allowPartial: true` only when the user explicitly accepts incomplete comparisons.
 
    **Headless environments:** Use the `skill_export_static_review` tool to write a standalone HTML file instead of starting a server. Feedback will be downloaded as a `feedback.json` file when the user clicks "Submit All Reviews". After download, copy `feedback.json` into the workspace directory for the next iteration to pick up.
 
