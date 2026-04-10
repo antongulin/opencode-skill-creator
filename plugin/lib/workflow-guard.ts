@@ -45,6 +45,36 @@ export function validateComparisonWorkspace(
   const issues: WorkflowValidationIssue[] = []
   const foundConfigs = new Set<string>()
 
+  if (!existsSync(workspace)) {
+    return {
+      valid: false,
+      evalCount: 0,
+      issues: [
+        {
+          evalDir: basename(workspace),
+          issue: "workspace path does not exist",
+        },
+      ],
+      foundConfigs: [],
+      searchRoot: workspace,
+    }
+  }
+
+  if (!statSync(workspace).isDirectory()) {
+    return {
+      valid: false,
+      evalCount: 0,
+      issues: [
+        {
+          evalDir: basename(workspace),
+          issue: "workspace path is not a directory",
+        },
+      ],
+      foundConfigs: [],
+      searchRoot: workspace,
+    }
+  }
+
   let searchRoot = workspace
   let evalDirs = sortedDirs(searchRoot, /^eval-/)
   if (evalDirs.length === 0) {

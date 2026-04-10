@@ -297,6 +297,15 @@ function aggregateResults(
   const runSummary: Record<string, unknown> = {}
   const configs = Object.keys(results)
 
+  if (configs.length === 0) {
+    runSummary.delta = {
+      pass_rate: "+0.00",
+      time_seconds: "+0.0",
+      tokens: "+0",
+    }
+    return runSummary
+  }
+
   for (const config of configs) {
     const runs = results[config] ?? []
     if (runs.length === 0) {
@@ -427,11 +436,17 @@ export function generateMarkdown(benchmark: BenchmarkOutput): string {
   ]
 
   const fmtPR = (s: any) =>
-    s ? `${(s.mean * 100).toFixed(0)}% ± ${(s.stddev * 100).toFixed(0)}%` : "—"
+    s && typeof s.mean === "number" && typeof s.stddev === "number"
+      ? `${(s.mean * 100).toFixed(0)}% ± ${(s.stddev * 100).toFixed(0)}%`
+      : "—"
   const fmtTime = (s: any) =>
-    s ? `${s.mean.toFixed(1)}s ± ${s.stddev.toFixed(1)}s` : "—"
+    s && typeof s.mean === "number" && typeof s.stddev === "number"
+      ? `${s.mean.toFixed(1)}s ± ${s.stddev.toFixed(1)}s`
+      : "—"
   const fmtTokens = (s: any) =>
-    s ? `${s.mean.toFixed(0)} ± ${s.stddev.toFixed(0)}` : "—"
+    s && typeof s.mean === "number" && typeof s.stddev === "number"
+      ? `${s.mean.toFixed(0)} ± ${s.stddev.toFixed(0)}`
+      : "—"
 
   lines.push(
     `| Pass Rate | ${fmtPR(a.pass_rate)} | ${fmtPR(b.pass_rate)} | ${delta.pass_rate ?? "—"} |`,

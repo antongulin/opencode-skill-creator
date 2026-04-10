@@ -65,6 +65,63 @@ const PACKAGE_VERSION = (() => {
   }
 })()
 
+interface ReviewPrepResult {
+  strictMode: boolean
+  allowPartial: boolean
+  validation: ReturnType<typeof validateComparisonWorkspace>
+  benchmarkPath: string | null
+}
+
+function prepareReviewLaunch(args: {
+  workspace: string
+  skillName?: string
+  benchmarkPath?: string
+  allowPartial?: boolean
+}): ReviewPrepResult {
+  const strictMode = !(args.allowPartial ?? false)
+  const validation = validateComparisonWorkspace(args.workspace)
+
+  if (strictMode && !validation.valid) {
+    const issueLines = validation.issues.map(
+      (issue) => `- ${issue.evalDir}: ${issue.issue}`,
+    )
+
+    throw new Error(
+      [
+        `Strict review preflight failed for ${args.workspace}.`,
+        "Missing required with_skill/baseline pairs:",
+        ...issueLines,
+        "Run missing eval pairs first, or set allowPartial=true to override.",
+      ].join("\n"),
+    )
+  }
+
+  let resolvedBenchmarkPath = args.benchmarkPath ?? null
+  if (!resolvedBenchmarkPath) {
+    try {
+      const benchmark = generateBenchmark(
+        args.workspace,
+        args.skillName ?? "",
+        "",
+      )
+      const jsonPath = join(args.workspace, "benchmark.json")
+      const mdPath = join(args.workspace, "benchmark.md")
+      writeFileSync(jsonPath, JSON.stringify(benchmark, null, 2))
+      writeFileSync(mdPath, generateMarkdown(benchmark))
+      resolvedBenchmarkPath = jsonPath
+    } catch {
+      resolvedBenchmarkPath = null
+    }
+  }
+
+  return {
+    strictMode,
+    allowPartial: args.allowPartial ?? false,
+    validation,
+    benchmarkPath: resolvedBenchmarkPath,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Auto-install: copy bundled skill files to the global skills directory
 // ---------------------------------------------------------------------------
@@ -523,39 +580,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .describe("Allow launching review even if with_skill/baseline run pairs are incomplete (default: false)"),
         },
         async execute(args) {
-          const { writeFileSync } = await import("fs")
-
-          const strictMode = !(args.allowPartial ?? false)
-          const validation = validateComparisonWorkspace(args.workspace)
-          if (strictMode && !validation.valid) {
-            const issueLines = validation.issues.map(
-              (issue) => `- ${issue.evalDir}: ${issue.issue}`,
-            )
-
-            throw new Error(
-              [
-                `Strict review preflight failed for ${args.workspace}.`,
-                "Missing required with_skill/baseline pairs:",
-                ...issueLines,
-                "Run missing eval pairs first, or set allowPartial=true to override.",
-              ].join("\n"),
-            )
-          }
-
-          // Auto-generate benchmark when omitted so the viewer always has a Benchmark tab.
-          let resolvedBenchmarkPath = args.benchmarkPath ?? null
-          if (!resolvedBenchmarkPath) {
-            const benchmark = generateBenchmark(
-              args.workspace,
-              args.skillName ?? "",
-              "",
-            )
-            const jsonPath = join(args.workspace, "benchmark.json")
-            const mdPath = join(args.workspace, "benchmark.md")
-            writeFileSync(jsonPath, JSON.stringify(benchmark, null, 2))
-            writeFileSync(mdPath, generateMarkdown(benchmark))
-            resolvedBenchmarkPath = jsonPath
-          }
+          const prep = prepareReviewLaunch(args)
 
           // Stop any existing server for this workspace
           const existing = activeServers.get(args.workspace)
@@ -571,7 +596,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             port: args.port ?? 3117,
             skillName: args.skillName,
             previousWorkspace: args.previousWorkspace ?? null,
-            benchmarkPath: resolvedBenchmarkPath,
+            benchmarkPath: prep.benchmarkPath,
             templatePath,
             openBrowser: true,
           })
@@ -581,13 +606,13 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           return JSON.stringify({
             url,
             feedbackPath,
-            benchmarkPath: resolvedBenchmarkPath,
+            benchmarkPath: prep.benchmarkPath,
             workflowGuard: {
-              strictMode,
-              allowPartial: args.allowPartial ?? false,
-              evalCount: validation.evalCount,
-              foundConfigs: validation.foundConfigs,
-              issues: validation.issues,
+              strictMode: prep.strictMode,
+              allowPartial: prep.allowPartial,
+              evalCount: prep.validation.evalCount,
+              foundConfigs: prep.validation.foundConfigs,
+              issues: prep.validation.issues,
             },
             message: `Eval viewer running at ${url}. Press Ctrl+C or call skill_stop_review to stop.`,
           })
@@ -658,38 +683,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .describe("Allow exporting review even if with_skill/baseline run pairs are incomplete (default: false)"),
         },
         async execute(args) {
-          const { writeFileSync } = await import("fs")
-
-          const strictMode = !(args.allowPartial ?? false)
-          const validation = validateComparisonWorkspace(args.workspace)
-          if (strictMode && !validation.valid) {
-            const issueLines = validation.issues.map(
-              (issue) => `- ${issue.evalDir}: ${issue.issue}`,
-            )
-
-            throw new Error(
-              [
-                `Strict review preflight failed for ${args.workspace}.`,
-                "Missing required with_skill/baseline pairs:",
-                ...issueLines,
-                "Run missing eval pairs first, or set allowPartial=true to override.",
-              ].join("\n"),
-            )
-          }
-
-          let resolvedBenchmarkPath = args.benchmarkPath ?? null
-          if (!resolvedBenchmarkPath) {
-            const benchmark = generateBenchmark(
-              args.workspace,
-              args.skillName ?? "",
-              "",
-            )
-            const jsonPath = join(args.workspace, "benchmark.json")
-            const mdPath = join(args.workspace, "benchmark.md")
-            writeFileSync(jsonPath, JSON.stringify(benchmark, null, 2))
-            writeFileSync(mdPath, generateMarkdown(benchmark))
-            resolvedBenchmarkPath = jsonPath
-          }
+          const prep = prepareReviewLaunch(args)
 
           const templatePath = join(TEMPLATES_DIR, "viewer.html")
 
@@ -698,19 +692,19 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             outputPath: args.outputPath,
             skillName: args.skillName,
             previousWorkspace: args.previousWorkspace ?? null,
-            benchmarkPath: resolvedBenchmarkPath,
+            benchmarkPath: prep.benchmarkPath,
             templatePath,
           })
 
           return JSON.stringify({
             outputPath: outPath,
-            benchmarkPath: resolvedBenchmarkPath,
+            benchmarkPath: prep.benchmarkPath,
             workflowGuard: {
-              strictMode,
-              allowPartial: args.allowPartial ?? false,
-              evalCount: validation.evalCount,
-              foundConfigs: validation.foundConfigs,
-              issues: validation.issues,
+              strictMode: prep.strictMode,
+              allowPartial: prep.allowPartial,
+              evalCount: prep.validation.evalCount,
+              foundConfigs: prep.validation.foundConfigs,
+              issues: prep.validation.issues,
             },
             message: `Static viewer written to ${outPath}`,
           })
