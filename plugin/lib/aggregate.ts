@@ -45,6 +45,34 @@ export interface BenchmarkOutput {
   notes: string[]
 }
 
+interface LoadResultsOutput {
+  results: Record<string, RunResult[]>
+  evalIds: Array<number | string>
+}
+
+function computeRunsPerConfiguration(results: Record<string, RunResult[]>): number {
+  const counts: number[] = []
+
+  for (const runs of Object.values(results)) {
+    const byEval = new Map<string, Set<number>>()
+
+    for (const run of runs) {
+      const evalKey = String(run.eval_id)
+      if (!byEval.has(evalKey)) {
+        byEval.set(evalKey, new Set<number>())
+      }
+      byEval.get(evalKey)!.add(run.run_number)
+    }
+
+    for (const set of byEval.values()) {
+      counts.push(set.size)
+    }
+  }
+
+  if (counts.length === 0) return 0
+  return Math.max(...counts)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -86,7 +114,7 @@ function sortedDirs(dir: string, pattern?: RegExp): string[] {
 // Load run results
 // ---------------------------------------------------------------------------
 
-function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
+function loadRunResults(benchmarkDir: string): LoadResultsOutput {
   // Support both layouts
   const runsDir = join(benchmarkDir, "runs")
   let searchDir: string
@@ -98,10 +126,11 @@ function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
     console.error(
       `No eval directories found in ${benchmarkDir} or ${runsDir}`,
     )
-    return {}
+    return { results: {}, evalIds: [] }
   }
 
   const results: Record<string, RunResult[]> = {}
+  const evalIds = new Set<number | string>()
 
   for (const [evalIdx, evalDir] of sortedDirs(searchDir, /^eval-/).entries()) {
     const metadataPath = join(evalDir, "eval_metadata.json")
@@ -120,6 +149,7 @@ function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
         /* ignore */
       }
     }
+    evalIds.add(evalId)
 
     // Discover config directories dynamically
     for (const configDir of sortedDirs(evalDir)) {
@@ -204,7 +234,10 @@ function loadRunResults(benchmarkDir: string): Record<string, RunResult[]> {
     }
   }
 
-  return results
+  return {
+    results,
+    evalIds: [...evalIds].sort(),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +303,8 @@ export function generateBenchmark(
   skillName = "",
   skillPath = "",
 ): BenchmarkOutput {
-  const results = loadRunResults(benchmarkDir)
+  const loaded = loadRunResults(benchmarkDir)
+  const results = loaded.results
   const runSummary = aggregateResults(results)
 
   // Build runs array
@@ -297,14 +331,7 @@ export function generateBenchmark(
     }
   }
 
-  // Determine eval IDs
-  const evalIds = [
-    ...new Set(
-      Object.values(results)
-        .flat()
-        .map((r) => r.eval_id),
-    ),
-  ].sort()
+  const runsPerConfiguration = computeRunsPerConfiguration(results)
 
   return {
     metadata: {
@@ -313,8 +340,8 @@ export function generateBenchmark(
       executor_model: "<model-name>",
       analyzer_model: "<model-name>",
       timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-      evals_run: evalIds,
-      runs_per_configuration: 3,
+      evals_run: loaded.evalIds,
+      runs_per_configuration: runsPerConfiguration,
     },
     runs,
     run_summary: runSummary,

@@ -11,9 +11,8 @@
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs"
-import { join } from "path"
+import { dirname, join, parse } from "path"
 import { randomBytes } from "crypto"
-import { parseSkillMd } from "./utils"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,12 +53,12 @@ export interface EvalOutput {
  */
 export function findProjectRoot(cwd?: string): string {
   let current = cwd ?? process.cwd()
-  const { root } = require("path").parse(current)
+  const { root } = parse(current)
 
   while (true) {
     if (existsSync(join(current, ".opencode"))) return current
     if (existsSync(join(current, ".claude"))) return current
-    const parent = require("path").dirname(current)
+    const parent = dirname(current)
     if (parent === current || parent === root) break
     current = parent
   }
@@ -102,7 +101,7 @@ async function runSingleQuery(
     ].join("\n")
     writeFileSync(skillFile, skillContent)
 
-    const cmd = ["opencode", "run"]
+    const cmd = ["opencode", "run", "--format", "json"]
     if (model) cmd.push("--model", model)
     cmd.push(query)
 
@@ -113,33 +112,80 @@ async function runSingleQuery(
       env: { ...process.env },
     })
 
-    // Collect output with timeout
+    // Collect output with timeout and detect skill invocation from JSON events.
     let buffer = ""
+    let triggered = false
     const decoder = new TextDecoder()
     const reader = proc.stdout.getReader()
-    const deadline = Date.now() + timeout * 1000
+    const timeoutMs = timeout * 1000
+
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+
+      try {
+        const event = JSON.parse(trimmed) as Record<string, unknown>
+        if (event.type !== "tool_use") return
+
+        const part = event.part as Record<string, unknown> | undefined
+        if (!part || typeof part !== "object") return
+
+        const toolName = typeof part.tool === "string" ? part.tool : ""
+        if (toolName !== "skill" && toolName !== "read") return
+
+        const serialized = JSON.stringify(part)
+        if (serialized.includes(cleanName)) {
+          triggered = true
+        }
+      } catch {
+        // Ignore non-JSON lines and malformed events.
+      }
+    }
+
+    const flushBuffer = (final = false) => {
+      let newlineIndex = buffer.indexOf("\n")
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex)
+        buffer = buffer.slice(newlineIndex + 1)
+        consumeLine(line)
+        newlineIndex = buffer.indexOf("\n")
+      }
+
+      if (final && buffer.trim()) {
+        consumeLine(buffer)
+        buffer = ""
+      }
+    }
+
+    const timeoutId = setTimeout(() => {
+      if (proc.exitCode === null) {
+        proc.kill()
+      }
+    }, timeoutMs)
 
     try {
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now()
-        const result = await Promise.race([
-          reader.read(),
-          new Promise<{ done: true; value: undefined }>((resolve) =>
-            setTimeout(() => resolve({ done: true, value: undefined }), remaining),
-          ),
-        ])
+      while (true) {
+        const result = await reader.read()
         if (result.done) break
         if (result.value) {
           buffer += decoder.decode(result.value, { stream: true })
+          flushBuffer()
         }
       }
-    } finally {
-      reader.releaseLock()
-      proc.kill()
+
+      flushBuffer(true)
       await proc.exited
+    } finally {
+      clearTimeout(timeoutId)
+      reader.releaseLock()
+
+      if (proc.exitCode === null) {
+        proc.kill()
+        await proc.exited
+      }
     }
 
-    return buffer.includes(cleanName)
+    return triggered
   } finally {
     // Clean up the temporary skill directory
     if (existsSync(skillsDir)) {
@@ -178,7 +224,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     numWorkers,
     timeout,
     projectRoot,
-    runsPerQuery = 1,
+    runsPerQuery = 3,
     triggerThreshold = 0.5,
     model,
   } = opts

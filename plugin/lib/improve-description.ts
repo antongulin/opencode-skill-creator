@@ -32,7 +32,7 @@ async function callOpenCode(
   writeFileSync(tmpPath, prompt)
 
   try {
-    const cmd = ["opencode", "run"]
+    const cmd = ["opencode", "run", "--format", "json"]
     if (model) cmd.push("--model", model)
     cmd.push("--file", tmpPath, "Process the attached file and follow its instructions.")
 
@@ -42,30 +42,75 @@ async function callOpenCode(
       env: { ...process.env },
     })
 
-    // Collect stdout with timeout
+    // Collect stdout with timeout. Prefer structured text events from JSON mode.
     let stdout = ""
+    let lineBuffer = ""
+    const textParts: string[] = []
     const decoder = new TextDecoder()
     const reader = proc.stdout.getReader()
-    const deadline = Date.now() + timeout * 1000
+    const timeoutMs = timeout * 1000
 
-    try {
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now()
-        const result = await Promise.race([
-          reader.read(),
-          new Promise<{ done: true; value: undefined }>((resolve) =>
-            setTimeout(() => resolve({ done: true, value: undefined }), remaining),
-          ),
-        ])
-        if (result.done) break
-        if (result.value) stdout += decoder.decode(result.value, { stream: true })
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+
+      try {
+        const event = JSON.parse(trimmed) as Record<string, unknown>
+        if (event.type !== "text") return
+        const part = event.part as Record<string, unknown> | undefined
+        if (!part || typeof part !== "object") return
+        const text = part.text
+        if (typeof text === "string" && text.trim()) {
+          textParts.push(text)
+        }
+      } catch {
+        // Ignore non-JSON lines.
       }
-    } finally {
-      reader.releaseLock()
+    }
+
+    const flushLines = (final = false) => {
+      let idx = lineBuffer.indexOf("\n")
+      while (idx !== -1) {
+        const line = lineBuffer.slice(0, idx)
+        lineBuffer = lineBuffer.slice(idx + 1)
+        consumeLine(line)
+        idx = lineBuffer.indexOf("\n")
+      }
+
+      if (final && lineBuffer.trim()) {
+        consumeLine(lineBuffer)
+        lineBuffer = ""
+      }
+    }
+
+    const timeoutId = setTimeout(() => {
       if (proc.exitCode === null) {
         proc.kill()
       }
+    }, timeoutMs)
+
+    try {
+      while (true) {
+        const result = await reader.read()
+        if (result.done) break
+        if (result.value) {
+          const chunk = decoder.decode(result.value, { stream: true })
+          stdout += chunk
+          lineBuffer += chunk
+          flushLines()
+        }
+      }
+
+      flushLines(true)
       await proc.exited
+    } finally {
+      clearTimeout(timeoutId)
+      reader.releaseLock()
+
+      if (proc.exitCode === null) {
+        proc.kill()
+        await proc.exited
+      }
     }
 
     // Check stderr for errors
@@ -83,6 +128,10 @@ async function callOpenCode(
 
     if (proc.exitCode !== 0 && proc.exitCode !== null) {
       throw new Error(`opencode run exited ${proc.exitCode}\nstderr: ${stderr}`)
+    }
+
+    if (textParts.length > 0) {
+      return textParts.join("\n")
     }
 
     return stdout
