@@ -89,9 +89,9 @@ function prepareReviewLaunch(args: {
     throw new Error(
       [
         `Strict review preflight failed for ${args.workspace}.`,
-        "Missing required with_skill/baseline pairs:",
+        "Preflight issues:",
         ...issueLines,
-        "Run missing eval pairs first, or set allowPartial=true to override.",
+        "Resolve the issues above, or set allowPartial=true to override.",
       ].join("\n"),
     )
   }
