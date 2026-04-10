@@ -67,10 +67,18 @@ function compareEvalIds(a: number | string, b: number | string): number {
   return String(a).localeCompare(String(b), undefined, { numeric: true })
 }
 
-function computeRunsPerConfiguration(results: Record<string, RunResult[]>): number {
+function computeRunsPerConfiguration(
+  results: Record<string, RunResult[]>,
+  evalIds: Array<number | string>,
+): number {
   const counts: number[] = []
 
   for (const runs of Object.values(results)) {
+    if (runs.length === 0) {
+      counts.push(0)
+      continue
+    }
+
     const byEval = new Map<string, Set<number>>()
 
     for (const run of runs) {
@@ -81,8 +89,14 @@ function computeRunsPerConfiguration(results: Record<string, RunResult[]>): numb
       byEval.get(evalKey)!.add(run.run_number)
     }
 
-    for (const set of byEval.values()) {
-      counts.push(set.size)
+    if (evalIds.length === 0) {
+      counts.push(0)
+      continue
+    }
+
+    for (const evalId of evalIds) {
+      const set = byEval.get(String(evalId))
+      counts.push(set ? set.size : 0)
     }
   }
 
@@ -364,7 +378,7 @@ export function generateBenchmark(
     }
   }
 
-  const runsPerConfiguration = computeRunsPerConfiguration(results)
+  const runsPerConfiguration = computeRunsPerConfiguration(results, loaded.evalIds)
 
   return {
     metadata: {

@@ -246,6 +246,11 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             readFileSync(args.evalSetPath, "utf-8"),
           )
 
+          const validation = validateSkill(args.skillPath)
+          if (!validation.valid) {
+            throw new Error(`Invalid skill at ${args.skillPath}: ${validation.message}`)
+          }
+
           const meta = parseSkillMd(args.skillPath)
           const projectRoot = findProjectRoot()
 
