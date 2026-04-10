@@ -36,6 +36,7 @@ import { runLoop } from "./lib/run-loop"
 import { generateBenchmark, generateMarkdown } from "./lib/aggregate"
 import { generateHtml as generateReportHtml } from "./lib/report"
 import { serveReview, exportStaticReview } from "./lib/review-server"
+import { validateComparisonWorkspace } from "./lib/workflow-guard"
 
 import type { EvalItem } from "./lib/run-eval"
 
@@ -516,8 +517,46 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .string()
             .optional()
             .describe("Path to benchmark.json for the Benchmark tab"),
+          allowPartial: tool.schema
+            .boolean()
+            .optional()
+            .describe("Allow launching review even if with_skill/baseline run pairs are incomplete (default: false)"),
         },
         async execute(args) {
+          const { writeFileSync } = await import("fs")
+
+          const strictMode = !(args.allowPartial ?? false)
+          const validation = validateComparisonWorkspace(args.workspace)
+          if (strictMode && !validation.valid) {
+            const issueLines = validation.issues.map(
+              (issue) => `- ${issue.evalDir}: ${issue.issue}`,
+            )
+
+            throw new Error(
+              [
+                `Strict review preflight failed for ${args.workspace}.`,
+                "Missing required with_skill/baseline pairs:",
+                ...issueLines,
+                "Run missing eval pairs first, or set allowPartial=true to override.",
+              ].join("\n"),
+            )
+          }
+
+          // Auto-generate benchmark when omitted so the viewer always has a Benchmark tab.
+          let resolvedBenchmarkPath = args.benchmarkPath ?? null
+          if (!resolvedBenchmarkPath) {
+            const benchmark = generateBenchmark(
+              args.workspace,
+              args.skillName ?? "",
+              "",
+            )
+            const jsonPath = join(args.workspace, "benchmark.json")
+            const mdPath = join(args.workspace, "benchmark.md")
+            writeFileSync(jsonPath, JSON.stringify(benchmark, null, 2))
+            writeFileSync(mdPath, generateMarkdown(benchmark))
+            resolvedBenchmarkPath = jsonPath
+          }
+
           // Stop any existing server for this workspace
           const existing = activeServers.get(args.workspace)
           if (existing) {
@@ -532,7 +571,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             port: args.port ?? 3117,
             skillName: args.skillName,
             previousWorkspace: args.previousWorkspace ?? null,
-            benchmarkPath: args.benchmarkPath ?? null,
+            benchmarkPath: resolvedBenchmarkPath,
             templatePath,
             openBrowser: true,
           })
@@ -542,6 +581,14 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           return JSON.stringify({
             url,
             feedbackPath,
+            benchmarkPath: resolvedBenchmarkPath,
+            workflowGuard: {
+              strictMode,
+              allowPartial: args.allowPartial ?? false,
+              evalCount: validation.evalCount,
+              foundConfigs: validation.foundConfigs,
+              issues: validation.issues,
+            },
             message: `Eval viewer running at ${url}. Press Ctrl+C or call skill_stop_review to stop.`,
           })
         },
@@ -605,8 +652,45 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .string()
             .optional()
             .describe("Path to benchmark.json"),
+          allowPartial: tool.schema
+            .boolean()
+            .optional()
+            .describe("Allow exporting review even if with_skill/baseline run pairs are incomplete (default: false)"),
         },
         async execute(args) {
+          const { writeFileSync } = await import("fs")
+
+          const strictMode = !(args.allowPartial ?? false)
+          const validation = validateComparisonWorkspace(args.workspace)
+          if (strictMode && !validation.valid) {
+            const issueLines = validation.issues.map(
+              (issue) => `- ${issue.evalDir}: ${issue.issue}`,
+            )
+
+            throw new Error(
+              [
+                `Strict review preflight failed for ${args.workspace}.`,
+                "Missing required with_skill/baseline pairs:",
+                ...issueLines,
+                "Run missing eval pairs first, or set allowPartial=true to override.",
+              ].join("\n"),
+            )
+          }
+
+          let resolvedBenchmarkPath = args.benchmarkPath ?? null
+          if (!resolvedBenchmarkPath) {
+            const benchmark = generateBenchmark(
+              args.workspace,
+              args.skillName ?? "",
+              "",
+            )
+            const jsonPath = join(args.workspace, "benchmark.json")
+            const mdPath = join(args.workspace, "benchmark.md")
+            writeFileSync(jsonPath, JSON.stringify(benchmark, null, 2))
+            writeFileSync(mdPath, generateMarkdown(benchmark))
+            resolvedBenchmarkPath = jsonPath
+          }
+
           const templatePath = join(TEMPLATES_DIR, "viewer.html")
 
           const outPath = exportStaticReview({
@@ -614,12 +698,20 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             outputPath: args.outputPath,
             skillName: args.skillName,
             previousWorkspace: args.previousWorkspace ?? null,
-            benchmarkPath: args.benchmarkPath ?? null,
+            benchmarkPath: resolvedBenchmarkPath,
             templatePath,
           })
 
           return JSON.stringify({
             outputPath: outPath,
+            benchmarkPath: resolvedBenchmarkPath,
+            workflowGuard: {
+              strictMode,
+              allowPartial: args.allowPartial ?? false,
+              evalCount: validation.evalCount,
+              foundConfigs: validation.foundConfigs,
+              issues: validation.issues,
+            },
             message: `Static viewer written to ${outPath}`,
           })
         },
