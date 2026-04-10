@@ -22,6 +22,27 @@ Package: https://www.npmjs.com/package/opencode-skill-creator
 
 ### Option A (Recommended): easiest setup for most users
 
+Run one command in your project root:
+
+```bash
+npx opencode-skill-creator install
+```
+
+What this command does:
+
+1. Creates/updates `opencode.json` in your current project
+2. Adds `"opencode-skill-creator"` to the `plugin` array
+3. Leaves your existing plugins untouched
+
+Then:
+
+4. Restart OpenCode
+5. Ask OpenCode: `Create a skill that helps with Docker compose files`
+
+That's it.
+
+Manual equivalent for the same result:
+
 1. Open (or create) `opencode.json` in your project root.
 2. Paste this:
 
@@ -32,9 +53,6 @@ Package: https://www.npmjs.com/package/opencode-skill-creator
 ```
 
 3. Restart OpenCode.
-4. Ask OpenCode: `Create a skill that helps with Docker compose files`.
-
-That's it.
 
 ### Option B: you already have plugins
 
@@ -54,6 +72,12 @@ Do not remove your existing plugins.
 ### Option C: global config (works in all projects)
 
 Use global config when you want this plugin available everywhere.
+
+Command version:
+
+```bash
+npx opencode-skill-creator install --global
+```
 
 1. Open (or create) `~/.config/opencode/opencode.json`
 2. Add:
@@ -135,7 +159,7 @@ You should see it use the skill-creator workflow/tools.
 - `Nothing changed after edit`: fully restart OpenCode.
 - `I already had plugins`: keep them; just add `opencode-skill-creator` to the same array.
 - `I want a clean reinstall`: delete `~/.config/opencode/skills/skill-creator/` and restart OpenCode.
-- `I expected an npx installer`: this package uses OpenCode's native plugin install flow (config-based), not a dedicated `npx` command.
+- `npx command failed`: run `npx opencode-skill-creator --help` and then use `install` or `install --global`.
 
 ### For LLMs / automation (compact)
 
