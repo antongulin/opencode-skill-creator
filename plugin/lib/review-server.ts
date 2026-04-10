@@ -66,6 +66,17 @@ interface Run {
   grading: Record<string, unknown> | null
 }
 
+interface FeedbackReviewItem {
+  run_id: string
+  feedback: string
+  timestamp?: string
+}
+
+interface FeedbackPayload {
+  reviews: FeedbackReviewItem[]
+  status?: string
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -254,6 +265,36 @@ function buildRun(root: string, runDir: string): Run | null {
   }
 
   return { id: runId, prompt, eval_id: evalId, outputs: outputFiles, grading }
+}
+
+function isValidFeedbackPayload(value: unknown): value is FeedbackPayload {
+  if (typeof value !== "object" || value === null) return false
+  if (!Object.prototype.hasOwnProperty.call(value, "reviews")) return false
+
+  const record = value as Record<string, unknown>
+  if (!Array.isArray(record.reviews)) return false
+
+  for (const item of record.reviews) {
+    if (typeof item !== "object" || item === null) return false
+    const review = item as Record<string, unknown>
+    if (typeof review.run_id !== "string") return false
+    if (typeof review.feedback !== "string") return false
+    if (
+      Object.prototype.hasOwnProperty.call(review, "timestamp") &&
+      typeof review.timestamp !== "string"
+    ) {
+      return false
+    }
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(record, "status") &&
+    typeof record.status !== "string"
+  ) {
+    return false
+  }
+
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -479,9 +520,9 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
           })
         }
 
-        if (typeof body !== "object" || body === null || !("reviews" in body)) {
+        if (!isValidFeedbackPayload(body)) {
           return new Response(
-            JSON.stringify({ error: "Expected JSON object with 'reviews' key" }),
+            JSON.stringify({ error: "Expected JSON object with a valid 'reviews' array" }),
             {
               status: 400,
               headers: { "Content-Type": "application/json" },
