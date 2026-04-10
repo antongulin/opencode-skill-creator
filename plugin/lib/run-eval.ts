@@ -31,6 +31,8 @@ export interface EvalResultItem {
   trigger_rate: number
   triggers: number
   runs: number
+  successful_runs: number
+  errors: number
   pass: boolean
 }
 
@@ -42,6 +44,8 @@ export interface EvalOutput {
     total: number
     passed: number
     failed: number
+    run_errors: number
+    queries_with_errors: number
   }
 }
 
@@ -290,7 +294,12 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
   }
 
   // Concurrency-limited execution
-  const jobResults: { query: string; triggered: boolean; item: EvalItem }[] = []
+  const jobResults: {
+    query: string
+    triggered: boolean
+    item: EvalItem
+    errored: boolean
+  }[] = []
   let idx = 0
 
   async function worker() {
@@ -306,10 +315,20 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
           projectRoot,
           model,
         )
-        jobResults.push({ query: job.item.query, triggered, item: job.item })
+        jobResults.push({
+          query: job.item.query,
+          triggered,
+          item: job.item,
+          errored: false,
+        })
       } catch (e) {
         console.error(`Warning: query failed: ${e}`)
-        jobResults.push({ query: job.item.query, triggered: false, item: job.item })
+        jobResults.push({
+          query: job.item.query,
+          triggered: false,
+          item: job.item,
+          errored: true,
+        })
       }
     }
   }
@@ -319,21 +338,27 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
 
   // Aggregate per-query
   const queryTriggers: Map<string, boolean[]> = new Map()
+  const queryErrors: Map<string, number> = new Map()
   const queryItems: Map<string, EvalItem> = new Map()
   for (const jr of jobResults) {
     if (!queryTriggers.has(jr.query)) queryTriggers.set(jr.query, [])
     queryTriggers.get(jr.query)!.push(jr.triggered)
+    queryErrors.set(jr.query, (queryErrors.get(jr.query) ?? 0) + (jr.errored ? 1 : 0))
     queryItems.set(jr.query, jr.item)
   }
 
   const results: EvalResultItem[] = []
   for (const [query, triggers] of queryTriggers) {
     const item = queryItems.get(query)!
-    const triggerRate = triggers.filter(Boolean).length / triggers.length
+    const errors = queryErrors.get(query) ?? 0
+    const successfulRuns = triggers.length - errors
+    const triggerRate =
+      successfulRuns > 0 ? triggers.filter(Boolean).length / successfulRuns : 0
     const shouldTrigger = item.should_trigger
-    const didPass = shouldTrigger
+    const thresholdPass = shouldTrigger
       ? triggerRate >= triggerThreshold
       : triggerRate < triggerThreshold
+    const didPass = errors === 0 && thresholdPass
 
     results.push({
       query,
@@ -341,11 +366,15 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
       trigger_rate: triggerRate,
       triggers: triggers.filter(Boolean).length,
       runs: triggers.length,
+      successful_runs: successfulRuns,
+      errors,
       pass: didPass,
     })
   }
 
   const passed = results.filter((r) => r.pass).length
+  const runErrors = results.reduce((acc, r) => acc + r.errors, 0)
+  const queriesWithErrors = results.filter((r) => r.errors > 0).length
 
   return {
     skill_name: skillName,
@@ -355,6 +384,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
       total: results.length,
       passed,
       failed: results.length - passed,
+      run_errors: runErrors,
+      queries_with_errors: queriesWithErrors,
     },
   }
 }
