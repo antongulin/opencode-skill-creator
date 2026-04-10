@@ -108,7 +108,7 @@ async function runSingleQuery(
     const proc = Bun.spawn(cmd, {
       cwd: projectRoot,
       stdout: "pipe",
-      stderr: "ignore",
+      stderr: "pipe",
       env: { ...process.env },
     })
 
@@ -175,6 +175,16 @@ async function runSingleQuery(
 
       flushBuffer(true)
       await proc.exited
+
+      if ((proc.exitCode ?? 0) !== 0) {
+        const stderrText = await new Response(proc.stderr).text()
+        const cleanedStderr = stderrText.trim()
+        throw new Error(
+          cleanedStderr
+            ? `opencode run exited ${proc.exitCode}: ${cleanedStderr}`
+            : `opencode run exited ${proc.exitCode}`,
+        )
+      }
     } finally {
       clearTimeout(timeoutId)
       reader.releaseLock()

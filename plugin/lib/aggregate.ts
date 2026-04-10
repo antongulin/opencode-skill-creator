@@ -50,6 +50,23 @@ interface LoadResultsOutput {
   evalIds: Array<number | string>
 }
 
+function compareEvalIds(a: number | string, b: number | string): number {
+  const parseNumeric = (value: number | string): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value !== "string") return null
+    const trimmed = value.trim()
+    if (!/^-?\d+$/.test(trimmed)) return null
+    const num = Number(trimmed)
+    return Number.isFinite(num) ? num : null
+  }
+
+  const aNum = parseNumeric(a)
+  const bNum = parseNumeric(b)
+  if (aNum !== null && bNum !== null) return aNum - bNum
+
+  return String(a).localeCompare(String(b), undefined, { numeric: true })
+}
+
 function computeRunsPerConfiguration(results: Record<string, RunResult[]>): number {
   const counts: number[] = []
 
@@ -149,7 +166,7 @@ function loadRunResults(benchmarkDir: string): LoadResultsOutput {
         /* ignore */
       }
     }
-    evalIds.add(evalId)
+    let hasLoadedRuns = false
 
     // Discover config directories dynamically
     for (const configDir of sortedDirs(evalDir)) {
@@ -230,13 +247,18 @@ function loadRunResults(benchmarkDir: string): LoadResultsOutput {
         result.notes = notes
 
         results[config].push(result)
+        hasLoadedRuns = true
       }
+    }
+
+    if (hasLoadedRuns) {
+      evalIds.add(evalId)
     }
   }
 
   return {
     results,
-    evalIds: [...evalIds].sort(),
+    evalIds: [...evalIds].sort(compareEvalIds),
   }
 }
 
