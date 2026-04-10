@@ -22,10 +22,10 @@ Package: https://www.npmjs.com/package/opencode-skill-creator
 
 ### Option A (Recommended): easiest setup for most users
 
-Run one command in your project root:
+Run one command (global install, recommended):
 
 ```bash
-npx opencode-skill-creator install
+npx opencode-skill-creator install --global
 ```
 
 Optional checks:
@@ -38,7 +38,7 @@ npx opencode-skill-creator --about
 
 What this command does:
 
-1. Creates/updates `opencode.json` in your current project
+1. Creates/updates `~/.config/opencode/opencode.json`
 2. Adds `"opencode-skill-creator"` to the `plugin` array
 3. Leaves your existing plugins untouched
 
@@ -51,7 +51,7 @@ That's it.
 
 Manual equivalent for the same result:
 
-1. Open (or create) `opencode.json` in your project root.
+1. Open (or create) `~/.config/opencode/opencode.json`
 2. Paste this:
 
 ```json
@@ -61,6 +61,12 @@ Manual equivalent for the same result:
 ```
 
 3. Restart OpenCode.
+
+If you want project-only install instead, use:
+
+```bash
+npx opencode-skill-creator install --project
+```
 
 ### Option B: you already have plugins
 
@@ -101,6 +107,12 @@ npx opencode-skill-creator install --global
 ### Option D: project config (only one project)
 
 Use project config when you want this plugin only for one repo.
+
+Command version:
+
+```bash
+npx opencode-skill-creator install --project
+```
 
 1. Open (or create) `opencode.json` in that project root
 2. Add:

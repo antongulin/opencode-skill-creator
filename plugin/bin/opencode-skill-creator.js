@@ -23,14 +23,14 @@ Links:
   repo: https://github.com/antongulin/opencode-skill-creator
 
 Usage:
-  npx opencode-skill-creator install [--project|--global]
-  npx opencode-skill-creator [--project|--global]
+  npx opencode-skill-creator install [--global|--project]
+  npx opencode-skill-creator [--global|--project]
   npx opencode-skill-creator --version
   npx opencode-skill-creator --about
 
 Options:
-  --project   Update ./opencode.json in current directory (default)
-  --global    Update ~/.config/opencode/opencode.json
+  --global    Update ~/.config/opencode/opencode.json (default)
+  --project   Update ./opencode.json in current directory
   -v, --version  Show installer version
   --about     Show package links
   -h, --help  Show help
@@ -93,7 +93,7 @@ function parseArgs(argv) {
     help: false,
     about: false,
     version: false,
-    global: hasGlobal,
+    global: !hasProject,
     command,
   }
 }
