@@ -60,7 +60,7 @@ async function callOpenCode(
         const part = event.part as Record<string, unknown> | undefined
         if (!part || typeof part !== "object") return
         const text = part.text
-        if (typeof text === "string" && text.trim()) {
+        if (typeof text === "string") {
           textParts.push(text)
         }
       } catch {
@@ -131,7 +131,7 @@ async function callOpenCode(
     }
 
     if (textParts.length > 0) {
-      return textParts.join("\n")
+      return textParts.join("")
     }
 
     return stdout
