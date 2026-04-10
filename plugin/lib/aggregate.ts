@@ -70,7 +70,7 @@ function computeRunsPerConfiguration(results: Record<string, RunResult[]>): numb
   }
 
   if (counts.length === 0) return 0
-  return Math.max(...counts)
+  return Math.min(...counts)
 }
 
 // ---------------------------------------------------------------------------

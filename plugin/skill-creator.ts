@@ -21,7 +21,6 @@ import {
   copyFileSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "fs"
@@ -104,9 +103,6 @@ function ensureSkillInstalled(): void {
   if (!shouldInstall) return
 
   try {
-    if (existsSync(skillsDir)) {
-      rmSync(skillsDir, { recursive: true, force: true })
-    }
     copyDirRecursive(BUNDLED_SKILL_DIR, skillsDir)
     writeFileSync(versionFile, `${PACKAGE_VERSION}\n`)
   } catch {
