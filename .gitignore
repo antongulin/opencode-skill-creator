@@ -25,3 +25,4 @@ tmp/
 # Marketing and promotional materials (not part of the project)
 promo/
 .github/DISCUSSION_TEMPLATE/
+.DS_Store
