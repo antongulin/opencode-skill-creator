@@ -52,5 +52,8 @@
   "devDependencies": {
     "@opencode-ai/plugin": "^1.0.0",
     "@types/bun": "latest"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
   }
 }

@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { homedir } from "os"
 import { join, dirname } from "path"
+import { parse, modify, applyEdits } from "jsonc-parser"
 
 const PKG_PATH = new URL("../package.json", import.meta.url)
 
@@ -100,9 +101,14 @@ function parseArgs(argv) {
 
 function getConfigPath(globalInstall) {
   if (globalInstall) {
-    return join(homedir(), ".config", "opencode", "opencode.json")
+    const configDir = join(homedir(), ".config", "opencode")
+    return existsSync(join(configDir, "opencode.jsonc"))
+      ? join(configDir, "opencode.jsonc")
+      : join(configDir, "opencode.json")
   }
-  return join(process.cwd(), "opencode.json")
+  return existsSync(join(process.cwd(), "opencode.jsonc"))
+    ? join(process.cwd(), "opencode.jsonc")
+    : join(process.cwd(), "opencode.json")
 }
 
 function loadConfig(path) {
@@ -110,21 +116,30 @@ function loadConfig(path) {
     return {}
   }
 
-  const raw = readFileSync(path, "utf-8").trim()
-  if (!raw) return {}
+  const raw = readFileSync(path, "utf-8")
+  if (!raw.trim()) return {}
 
   try {
-    return JSON.parse(raw)
+    return parse(raw)
   } catch {
     throw new Error(
-      `Could not parse JSON in ${path}. Please fix the file, then re-run this installer.`
+      `Could not parse JSONC in ${path}. Please fix the file, then re-run this installer.`
     )
   }
 }
 
 function saveConfig(path, config) {
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf-8")
+
+  let raw
+  if (existsSync(path)) {
+    raw = readFileSync(path, "utf-8")
+  } else {
+    raw = "{}"
+  }
+
+  const edits = modify(raw, ["plugin"], config.plugin, {})
+  writeFileSync(path, applyEdits(raw, edits), "utf-8")
 }
 
 function ensurePlugin(config) {
