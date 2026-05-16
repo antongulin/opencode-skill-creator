@@ -202,12 +202,10 @@ function main() {
   const changed = ensurePlugin(config)
   if (changed) {
     saveConfig(configPath, raw, config)
-  }
-
-  console.log(`Updated ${configPath}`)
-  if (changed) {
+    console.log(`Updated ${configPath}`)
     console.log('Added "opencode-skill-creator" to the "plugin" array.')
   } else {
+    console.log(`No changes needed for ${configPath}`)
     console.log('"opencode-skill-creator" is already in the "plugin" array.')
   }
 
