@@ -19,7 +19,7 @@ tmp/
 *.tmp
 
 # Package manager installs
-**/node_modules/
+plugin/node_modules/
 
 # Marketing skills (project-level only)
 .opencode/

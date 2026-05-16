@@ -77,6 +77,30 @@ test("global install updates opencode.jsonc when it exists and preserves comment
   })
 })
 
+test("global install creates plugin array in existing opencode.jsonc without plugin key", async () => {
+  await withHome(async (home) => {
+    const path = configPath(home, "opencode.jsonc")
+    writeFileSync(
+      path,
+      `{
+  // Keep this comment
+  "model": "anthropic/claude-sonnet-4-6"
+}
+`,
+      "utf-8"
+    )
+
+    await runInstaller(home)
+
+    const updated = readFileSync(path, "utf-8")
+    assert.match(updated, /\/\/ Keep this comment/)
+    assert.match(updated, /"model": "anthropic\/claude-sonnet-4-6"/)
+    assert.match(updated, /"plugin": \[/)
+    assert.match(updated, /"opencode-skill-creator"/)
+    assert.equal(existsSync(configPath(home, "opencode.json")), false)
+  })
+})
+
 test("global install prefers opencode.jsonc when both opencode.jsonc and opencode.json exist", async () => {
   await withHome(async (home) => {
     const jsoncPath = configPath(home, "opencode.jsonc")
