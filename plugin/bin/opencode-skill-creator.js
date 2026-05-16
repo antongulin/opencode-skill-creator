@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { applyEdits, modify, parse, printParseErrorCode } from "jsonc-parser"
 import { homedir } from "os"
 import { join, dirname } from "path"
 
 const PKG_PATH = new URL("../package.json", import.meta.url)
+const PLUGIN_LOAD_ERROR_PREFIX = "Failed to load plugin opencode-skill-creator:"
 
 function getVersion() {
   try {
@@ -112,6 +113,88 @@ function getConfigPath(globalInstall) {
   return join(configDir, "opencode.json")
 }
 
+function clearStaleOpenCodePackageCache() {
+  const currentVersion = getVersion()
+  if (currentVersion === "unknown") return false
+
+  const cacheDir = process.env.XDG_CACHE_HOME || join(homedir(), ".cache")
+  const packageCacheRoot = join(
+    cacheDir,
+    "opencode",
+    "packages",
+    "opencode-skill-creator@latest"
+  )
+  const cachedPackageJson = join(
+    packageCacheRoot,
+    "node_modules",
+    "opencode-skill-creator",
+    "package.json"
+  )
+
+  if (!existsSync(cachedPackageJson)) return false
+
+  try {
+    const cachedPackage = JSON.parse(readFileSync(cachedPackageJson, "utf-8"))
+    if (cachedPackage.version === currentVersion) return false
+  } catch {
+    // Broken cache entries should be removed so OpenCode can recreate them.
+  }
+
+  rmSync(packageCacheRoot, { recursive: true, force: true })
+  return true
+}
+
+function getDesktopGlobalDataPath() {
+  if (process.platform === "darwin") {
+    return join(
+      homedir(),
+      "Library",
+      "Application Support",
+      "ai.opencode.desktop",
+      "opencode.global.dat"
+    )
+  }
+
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || join(homedir(), "AppData", "Roaming")
+    return join(appData, "ai.opencode.desktop", "opencode.global.dat")
+  }
+
+  const configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
+  return join(configDir, "ai.opencode.desktop", "opencode.global.dat")
+}
+
+function clearPluginFaultNotifications() {
+  const dataPath = getDesktopGlobalDataPath()
+  if (!existsSync(dataPath)) return 0
+
+  try {
+    const data = JSON.parse(readFileSync(dataPath, "utf-8"))
+    if (typeof data.notification !== "string") return 0
+
+    const notifications = JSON.parse(data.notification)
+    if (!Array.isArray(notifications.list)) return 0
+
+    const originalCount = notifications.list.length
+    notifications.list = notifications.list.filter((notification) => {
+      if (notification?.type !== "error") return true
+
+      const message = notification?.error?.data?.message
+      return typeof message !== "string" || !message.startsWith(PLUGIN_LOAD_ERROR_PREFIX)
+    })
+
+    const removedCount = originalCount - notifications.list.length
+    if (removedCount === 0) return 0
+
+    data.notification = JSON.stringify(notifications)
+    writeFileSync(dataPath, `${JSON.stringify(data, null, "\t")}\n`, "utf-8")
+    return removedCount
+  } catch {
+    // Desktop state cleanup is best-effort; installation should not fail here.
+    return 0
+  }
+}
+
 function loadConfig(path) {
   if (!existsSync(path)) {
     return {
@@ -207,6 +290,20 @@ function main() {
   } else {
     console.log(`No changes needed for ${configPath}`)
     console.log('"opencode-skill-creator" is already in the "plugin" array.')
+  }
+
+  if (global && clearStaleOpenCodePackageCache()) {
+    console.log("Cleared stale OpenCode package cache for opencode-skill-creator.")
+  }
+
+  if (global) {
+    const removedNotifications = clearPluginFaultNotifications()
+    if (removedNotifications > 0) {
+      const noun = removedNotifications === 1 ? "notification" : "notifications"
+      console.log(
+        `Removed ${removedNotifications} stale opencode-skill-creator plugin fault ${noun}.`
+      )
+    }
   }
 
   console.log("\nNext steps:")

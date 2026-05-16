@@ -19,7 +19,13 @@ async function createHome() {
 
 async function runInstaller(home) {
   return execFileAsync(process.execPath, [binPath, "install", "--global"], {
-    env: { ...process.env, HOME: home },
+    env: {
+      ...process.env,
+      APPDATA: join(home, "AppData", "Roaming"),
+      HOME: home,
+      XDG_CACHE_HOME: join(home, ".cache"),
+      XDG_CONFIG_HOME: join(home, ".config"),
+    },
   })
 }
 
@@ -32,6 +38,52 @@ async function runProjectInstaller(cwd) {
 
 function configPath(home, filename) {
   return join(home, ".config", "opencode", filename)
+}
+
+function cachedPackagePath(home) {
+  return join(
+    home,
+    ".cache",
+    "opencode",
+    "packages",
+    "opencode-skill-creator@latest",
+    "node_modules",
+    "opencode-skill-creator"
+  )
+}
+
+function desktopDataPath(home) {
+  if (process.platform === "darwin") {
+    return join(home, "Library", "Application Support", "ai.opencode.desktop", "opencode.global.dat")
+  }
+
+  if (process.platform === "win32") {
+    return join(home, "AppData", "Roaming", "ai.opencode.desktop", "opencode.global.dat")
+  }
+
+  return join(home, ".config", "ai.opencode.desktop", "opencode.global.dat")
+}
+
+async function writeDesktopNotifications(home, notifications) {
+  const path = desktopDataPath(home)
+  await mkdir(join(path, ".."), { recursive: true })
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        notification: JSON.stringify({ list: notifications }),
+        layout: JSON.stringify({ sidebar: { opened: true } }),
+      },
+      null,
+      "\t"
+    )}\n`,
+    "utf-8"
+  )
+}
+
+function readDesktopNotifications(home) {
+  const data = JSON.parse(readFileSync(desktopDataPath(home), "utf-8"))
+  return JSON.parse(data.notification).list
 }
 
 async function withHome(fn) {
@@ -157,6 +209,110 @@ test("global install rejects invalid JSONC without modifying the file", async ()
     await assert.rejects(runInstaller(home), /Could not parse JSONC/)
     assert.equal(readFileSync(path, "utf-8"), original)
     assert.equal(existsSync(configPath(home, "opencode.json")), false)
+  })
+})
+
+test("global install clears stale OpenCode package cache", async () => {
+  await withHome(async (home) => {
+    const path = configPath(home, "opencode.json")
+    writeFileSync(path, `{
+  "plugin": ["opencode-skill-creator"]
+}
+`, "utf-8")
+
+    const packagePath = cachedPackagePath(home)
+    await mkdir(packagePath, { recursive: true })
+    writeFileSync(join(packagePath, "package.json"), `{
+  "name": "opencode-skill-creator",
+  "version": "0.2.11",
+  "main": "./skill-creator.ts"
+}
+`, "utf-8")
+
+    const result = await runInstaller(home)
+
+    assert.equal(existsSync(packagePath), false)
+    assert.match(result.stdout, /Cleared stale OpenCode package cache/)
+  })
+})
+
+test("global install removes opencode-skill-creator plugin fault notifications", async () => {
+  await withHome(async (home) => {
+    const path = configPath(home, "opencode.json")
+    writeFileSync(path, `{
+  "plugin": ["opencode-skill-creator"]
+}
+`, "utf-8")
+
+    await writeDesktopNotifications(home, [
+      {
+        directory: "/tmp/project-a",
+        time: 1,
+        viewed: false,
+        type: "error",
+        session: "global",
+        error: {
+          name: "UnknownError",
+          data: {
+            message:
+              "Failed to load plugin opencode-skill-creator: Stripping types is currently unsupported for files under node_modules",
+          },
+        },
+      },
+      {
+        directory: "/tmp/project-b",
+        time: 2,
+        viewed: false,
+        type: "error",
+        session: "global",
+        error: {
+          name: "UnknownError",
+          data: { message: "Failed to load plugin other-plugin: boom" },
+        },
+      },
+      {
+        directory: "/tmp/project-c",
+        time: 3,
+        viewed: false,
+        type: "error",
+        session: "global",
+        error: {
+          name: "UnknownError",
+          data: { message: "Failed to load plugin opencode-skill-creator-extra: boom" },
+        },
+      },
+      {
+        directory: "/tmp/project-d",
+        time: 4,
+        viewed: false,
+        type: "turn-complete",
+        session: "ses_test",
+      },
+    ])
+
+    const result = await runInstaller(home)
+
+    const notifications = readDesktopNotifications(home)
+    assert.equal(notifications.length, 3)
+    assert.equal(
+      notifications.some((notification) =>
+        JSON.stringify(notification).includes("Failed to load plugin opencode-skill-creator:")
+      ),
+      false
+    )
+    assert.equal(
+      notifications.some((notification) =>
+        JSON.stringify(notification).includes("Failed to load plugin other-plugin")
+      ),
+      true
+    )
+    assert.equal(
+      notifications.some((notification) =>
+        JSON.stringify(notification).includes("Failed to load plugin opencode-skill-creator-extra")
+      ),
+      true
+    )
+    assert.match(result.stdout, /Removed 1 stale opencode-skill-creator plugin fault notification/)
   })
 })
 
