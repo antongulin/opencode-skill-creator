@@ -153,9 +153,9 @@ Then create `~/.config/opencode/package.json` if needed:
 After you add `opencode-skill-creator` and restart OpenCode:
 
 1. OpenCode installs the plugin from npm automatically.
-2. On first plugin startup, it auto-copies skill files to:
-   - `~/.config/opencode/skills/skill-creator/`
-3. The skill becomes available automatically in your sessions.
+2. The npm package loads compiled JavaScript from `dist/skill-creator.js`.
+3. On first plugin startup, it auto-copies skill files to `~/.config/opencode/skills/skill-creator/`.
+4. Restart OpenCode after changing config because plugin config is loaded at startup.
 
 ### Verify install
 
@@ -175,11 +175,19 @@ You should see it use the skill-creator workflow/tools.
 
 ### Troubleshooting
 
-- `I don't have opencode.json`: create one in project root (or use global config path).
+- `I don't have opencode.json or opencode.jsonc`: create one in project root (or use global config path).
 - `Nothing changed after edit`: fully restart OpenCode.
 - `I already had plugins`: keep them; just add `opencode-skill-creator` to the same array.
 - `I want a clean reinstall`: delete `~/.config/opencode/skills/skill-creator/` and restart OpenCode.
 - `npx command failed`: run `npx opencode-skill-creator --help` and then use `install` or `install --global`.
+
+### Compatibility fixes
+
+- The installer supports existing `opencode.jsonc` files and preserves JSONC comments when adding the plugin entry.
+- The npm package loads compiled JavaScript from `dist/skill-creator.js` so OpenCode does not need to strip TypeScript under `node_modules`.
+- The plugin resolves bundled assets with `import.meta.url`, which works in OpenCode Desktop runtimes where `import.meta.path` is unavailable.
+- Trigger evaluations run with an explicit OpenCode agent, defaulting to `build`, to avoid false 0% scores from delegating default agents.
+- Release-safety tests now verify the compiled plugin entrypoint imports correctly and that `dist/` was built from the current TypeScript sources.
 
 ### For LLMs / automation (compact)
 
@@ -215,6 +223,10 @@ The plugin registers these custom tools that OpenCode can call:
 | `skill_serve_review` | Start the eval review viewer (HTTP server) |
 | `skill_stop_review` | Stop a running review server |
 | `skill_export_static_review` | Generate standalone HTML review file |
+| `skill_add_gold_standard` | Save an exemplary skill response for future guidance |
+| `skill_list_gold_standards` | List saved gold-standard examples for a skill |
+| `skill_remove_gold_standard` | Remove a saved gold-standard example |
+| `skill_get_gold_advice` | Get guidance from saved gold-standard examples |
 
 ### Review workflow guard (strict by default)
 

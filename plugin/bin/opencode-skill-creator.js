@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
+import { applyEdits, modify, parse, printParseErrorCode } from "jsonc-parser"
 import { homedir } from "os"
 import { join, dirname } from "path"
 
@@ -29,8 +30,8 @@ Usage:
   npx opencode-skill-creator --about
 
 Options:
-  --global    Update ~/.config/opencode/opencode.json (default)
-  --project   Update ./opencode.json in current directory
+  --global    Update ~/.config/opencode/opencode.jsonc if present, otherwise opencode.json (default)
+  --project   Update ./opencode.jsonc if present, otherwise opencode.json in current directory
   -v, --version  Show installer version
   --about     Show package links
   -h, --help  Show help
@@ -99,49 +100,84 @@ function parseArgs(argv) {
 }
 
 function getConfigPath(globalInstall) {
-  if (globalInstall) {
-    return join(homedir(), ".config", "opencode", "opencode.json")
+  const configDir = globalInstall
+    ? join(homedir(), ".config", "opencode")
+    : process.cwd()
+  const jsoncPath = join(configDir, "opencode.jsonc")
+
+  if (existsSync(jsoncPath)) {
+    return jsoncPath
   }
-  return join(process.cwd(), "opencode.json")
+
+  return join(configDir, "opencode.json")
 }
 
 function loadConfig(path) {
   if (!existsSync(path)) {
-    return {}
+    return {
+      raw: "{\n}\n",
+      config: {},
+    }
   }
 
-  const raw = readFileSync(path, "utf-8").trim()
-  if (!raw) return {}
+  const raw = readFileSync(path, "utf-8")
+  if (!raw.trim()) {
+    return {
+      raw: "{\n}\n",
+      config: {},
+    }
+  }
 
-  try {
-    return JSON.parse(raw)
-  } catch {
+  const errors = []
+  const config = parse(raw, errors, {
+    allowTrailingComma: true,
+    disallowComments: false,
+  })
+
+  if (errors.length) {
+    const message = errors
+      .map((error) => printParseErrorCode(error.error))
+      .join(", ")
     throw new Error(
-      `Could not parse JSON in ${path}. Please fix the file, then re-run this installer.`
+      `Could not parse JSONC in ${path}: ${message}. Please fix the file, then re-run this installer.`
     )
   }
+
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Expected top-level config in ${path} to be an object.`)
+  }
+
+  return { raw, config }
 }
 
-function saveConfig(path, config) {
+function saveConfig(path, raw, config) {
+  const formattingOptions = {
+    insertSpaces: true,
+    tabSize: 2,
+  }
+
+  const edits = Array.isArray(config.plugin)
+    ? modify(raw, ["plugin", -1], "opencode-skill-creator", {
+        formattingOptions,
+      })
+    : modify(raw, ["plugin"], ["opencode-skill-creator"], {
+        formattingOptions,
+      })
+
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf-8")
+  writeFileSync(path, applyEdits(raw, edits), "utf-8")
 }
 
 function ensurePlugin(config) {
   if (typeof config.plugin === "undefined") {
-    config.plugin = []
-  }
-
-  if (!Array.isArray(config.plugin)) {
-    throw new Error('Expected "plugin" to be an array in opencode.json')
-  }
-
-  if (!config.plugin.includes("opencode-skill-creator")) {
-    config.plugin.push("opencode-skill-creator")
     return true
   }
 
-  return false
+  if (!Array.isArray(config.plugin)) {
+    throw new Error('Expected "plugin" to be an array in opencode config')
+  }
+
+  return !config.plugin.includes("opencode-skill-creator")
 }
 
 function main() {
@@ -162,9 +198,11 @@ function main() {
   }
 
   const configPath = getConfigPath(global)
-  const config = loadConfig(configPath)
+  const { raw, config } = loadConfig(configPath)
   const changed = ensurePlugin(config)
-  saveConfig(configPath, config)
+  if (changed) {
+    saveConfig(configPath, raw, config)
+  }
 
   console.log(`Updated ${configPath}`)
   if (changed) {

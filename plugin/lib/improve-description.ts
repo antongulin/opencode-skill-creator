@@ -14,6 +14,10 @@ import { join } from "path"
 import { tmpdir } from "os"
 import { randomBytes } from "crypto"
 
+import {
+  classifyEvalFailures,
+  formatFailureDiagnostics,
+} from "./failure-taxonomy"
 import type { EvalOutput, EvalResultItem } from "./run-eval"
 
 // ---------------------------------------------------------------------------
@@ -294,6 +298,13 @@ Current scores (${scoresSummary}):
     }
   }
 
+  const diagnostics = formatFailureDiagnostics(
+    classifyEvalFailures(evalResults.results ?? []),
+  )
+  const failureDiagnosticsSection = diagnostics
+    ? `\nFAILURE DIAGNOSTICS:\n${diagnostics}\n`
+    : ""
+
   prompt += `</scores_summary>
 
 Skill content (for context on what the skill does):
@@ -314,7 +325,8 @@ Here are some tips that we've found to work well in writing these descriptions:
 - The description competes with other skills for the agent's attention — make it distinctive and immediately recognizable.
 - If you're getting lots of failures after repeated attempts, change things up. Try different sentence structures or wordings.
 
-I'd encourage you to be creative and mix up the style in different iterations since you'll have multiple opportunities to try different approaches and we'll just grab the highest-scoring one at the end. 
+I'd encourage you to be creative and mix up the style in different iterations since you'll have multiple opportunities to try different approaches and we'll just grab the highest-scoring one at the end.
+${failureDiagnosticsSection}
 
 Please respond with only the new description text in <new_description> tags, nothing else.`
 

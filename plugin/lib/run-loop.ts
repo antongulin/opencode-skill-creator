@@ -13,7 +13,7 @@ import { join } from "path"
 import { tmpdir } from "os"
 
 import { parseSkillMd } from "./utils"
-import { findProjectRoot, runEval } from "./run-eval"
+import { buildEvalWarnings, findProjectRoot, runEval } from "./run-eval"
 import { improveDescription } from "./improve-description"
 import { generateHtml } from "./report"
 
@@ -90,6 +90,7 @@ export interface RunLoopOptions {
   triggerThreshold: number
   holdout: number
   model: string | undefined
+  agent: string | undefined
   verbose: boolean
   liveReportPath?: string | null
   logDir?: string | null
@@ -143,6 +144,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     triggerThreshold,
     holdout,
     model,
+    agent,
     verbose,
     liveReportPath,
     logDir,
@@ -192,6 +194,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
       runsPerQuery,
       triggerThreshold,
       model,
+      agent,
     })
     const evalElapsed = (Date.now() - t0) / 1000
 
@@ -203,36 +206,45 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     const testResultList = allResults.results.filter(
       (r) => !trainQueriesSet.has(r.query),
     )
+    const trainWarnings = buildEvalWarnings(trainResultList)
+    const testWarnings = buildEvalWarnings(testResultList)
 
     const trainPassed = trainResultList.filter((r) => r.pass).length
     const trainTotal = trainResultList.length
+    const trainRunErrors = trainResultList.reduce((acc, r) => acc + r.errors, 0)
     const trainSummary = {
       passed: trainPassed,
       failed: trainTotal - trainPassed,
       total: trainTotal,
+      run_errors: trainRunErrors,
+      queries_with_errors: trainResultList.filter((r) => r.errors > 0).length,
     }
     const trainResults: EvalOutput = {
       skill_name: name,
       description: currentDescription,
       results: trainResultList,
+      warnings: trainWarnings,
       summary: trainSummary,
     }
 
     let testResults: EvalOutput | null = null
-    let testSummary: { passed: number; failed: number; total: number } | null =
-      null
+    let testSummary: EvalOutput["summary"] | null = null
     if (testSet.length > 0) {
       const testPassed = testResultList.filter((r) => r.pass).length
       const testTotal = testResultList.length
+      const testRunErrors = testResultList.reduce((acc, r) => acc + r.errors, 0)
       testSummary = {
         passed: testPassed,
         failed: testTotal - testPassed,
         total: testTotal,
+        run_errors: testRunErrors,
+        queries_with_errors: testResultList.filter((r) => r.errors > 0).length,
       }
       testResults = {
         skill_name: name,
         description: currentDescription,
         results: testResultList,
+        warnings: testWarnings,
         summary: testSummary,
       }
     }
@@ -281,6 +293,9 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
         console.error(
           `Test:  ${testSummary.passed}/${testSummary.total} passed`,
         )
+      }
+      for (const warning of new Set([...trainWarnings, ...testWarnings])) {
+        console.error(`Warning: ${warning}`)
       }
     }
 

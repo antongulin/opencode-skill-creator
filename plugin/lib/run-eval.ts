@@ -40,6 +40,7 @@ export interface EvalOutput {
   skill_name: string
   description: string
   results: EvalResultItem[]
+  warnings: string[]
   summary: {
     total: number
     passed: number
@@ -52,6 +53,36 @@ export interface EvalOutput {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const ALL_ZERO_WARNING =
+  "All should-trigger queries produced 0 triggers with no run errors. Check that trigger evals are using an agent that exposes skill tool events, such as the build agent."
+
+export function buildOpenCodeRunCommand(
+  query: string,
+  opts: { agent?: string; model?: string },
+): string[] {
+  const cmd = [
+    "opencode",
+    "run",
+    "--format",
+    "json",
+    "--agent",
+    opts.agent ?? "build",
+  ]
+  if (opts.model) cmd.push("--model", opts.model)
+  cmd.push(query)
+  return cmd
+}
+
+export function buildEvalWarnings(results: EvalResultItem[]): string[] {
+  const shouldTriggerResults = results.filter((r) => r.should_trigger)
+  if (shouldTriggerResults.length === 0) return []
+
+  const allZeroWithoutErrors = shouldTriggerResults.every(
+    (r) => r.triggers === 0 && r.errors === 0,
+  )
+  return allZeroWithoutErrors ? [ALL_ZERO_WARNING] : []
+}
 
 /**
  * Walk up from `cwd` looking for `.opencode/` or `.claude/` to find the
@@ -81,6 +112,7 @@ async function runSingleQuery(
   skillDescription: string,
   timeout: number,
   projectRoot: string,
+  agent: string,
   model?: string,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(skillName)) {
@@ -113,9 +145,7 @@ async function runSingleQuery(
     ].join("\n")
     writeFileSync(skillFile, skillContent)
 
-    const cmd = ["opencode", "run", "--format", "json"]
-    if (model) cmd.push("--model", model)
-    cmd.push(query)
+    const cmd = buildOpenCodeRunCommand(query, { agent, model })
 
     const proc = Bun.spawn(cmd, {
       cwd: projectRoot,
@@ -263,6 +293,7 @@ export interface RunEvalOptions {
   runsPerQuery?: number
   triggerThreshold?: number
   model?: string
+  agent?: string
 }
 
 /**
@@ -282,6 +313,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     runsPerQuery = 3,
     triggerThreshold = 0.5,
     model,
+    agent = "build",
   } = opts
 
   // Build the full list of (item, runIdx) jobs
@@ -313,6 +345,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
           description,
           timeout,
           projectRoot,
+          agent,
           model,
         )
         jobResults.push({
@@ -380,6 +413,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     skill_name: skillName,
     description,
     results,
+    warnings: buildEvalWarnings(results),
     summary: {
       total: results.length,
       passed,

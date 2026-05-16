@@ -62,7 +62,7 @@ npx opencode-skill-creator --about
 
 What this command does:
 
-1. Creates/updates `~/.config/opencode/opencode.json`
+1. Updates existing `~/.config/opencode/opencode.jsonc` when present; otherwise creates/updates `opencode.json`
 2. Adds `"opencode-skill-creator"` to the `plugin` array
 3. Leaves your existing plugins untouched
 
@@ -75,7 +75,7 @@ That's it.
 
 Manual equivalent for the same result:
 
-1. Open (or create) `~/.config/opencode/opencode.json`
+1. Open (or create) `~/.config/opencode/opencode.jsonc` or `~/.config/opencode/opencode.json`
 2. Paste this:
 
 ```json
@@ -117,7 +117,7 @@ Command version:
 npx opencode-skill-creator install --global
 ```
 
-1. Open (or create) `~/.config/opencode/opencode.json`
+1. Open (or create) `~/.config/opencode/opencode.jsonc` or `~/.config/opencode/opencode.json`
 2. Add:
 
 ```json
@@ -138,7 +138,7 @@ Command version:
 npx opencode-skill-creator install --project
 ```
 
-1. Open (or create) `opencode.json` in that project root
+1. Open (or create) `opencode.jsonc` or `opencode.json` in that project root
 2. Add:
 
 ```json
@@ -177,9 +177,9 @@ Then create `~/.config/opencode/package.json` if needed:
 After you add `opencode-skill-creator` and restart OpenCode:
 
 1. OpenCode installs the plugin from npm automatically.
-2. On first plugin startup, it auto-copies skill files to:
-   - `~/.config/opencode/skills/skill-creator/`
-3. The skill becomes available automatically in your sessions.
+2. The npm package loads compiled JavaScript from `dist/skill-creator.js`.
+3. On first plugin startup, it auto-copies skill files to `~/.config/opencode/skills/skill-creator/`.
+4. Restart OpenCode after changing config because plugin config is loaded at startup.
 
 ### Verify install
 
@@ -199,7 +199,7 @@ You should see it use the skill-creator workflow/tools.
 
 ### Troubleshooting
 
-- `I don't have opencode.json`: create one in project root (or use global config path).
+- `I don't have opencode.jsonc/opencode.json`: create one in project root (or use global config path).
 - `Nothing changed after edit`: fully restart OpenCode.
 - `I already had plugins`: keep them; just add `opencode-skill-creator` to the same array.
 - `I want a clean reinstall`: delete `~/.config/opencode/skills/skill-creator/` and restart OpenCode.

@@ -16,6 +16,7 @@
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { join, dirname } from "path"
 import { homedir } from "os"
+import { fileURLToPath } from "url"
 import {
   existsSync,
   mkdirSync,
@@ -37,6 +38,12 @@ import { generateBenchmark, generateMarkdown } from "./lib/aggregate"
 import { generateHtml as generateReportHtml } from "./lib/report"
 import { serveReview, exportStaticReview } from "./lib/review-server"
 import { validateComparisonWorkspace } from "./lib/workflow-guard"
+import {
+  addGoldStandard,
+  getGoldAdvice,
+  listGoldStandards,
+  removeGoldStandard,
+} from "./lib/gold-standards"
 
 import type { EvalItem } from "./lib/run-eval"
 
@@ -44,15 +51,22 @@ import type { EvalItem } from "./lib/run-eval"
 // Resolve the templates directory relative to this file
 // ---------------------------------------------------------------------------
 
-const TEMPLATES_DIR = join(dirname(import.meta.path), "templates")
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+const TEMPLATES_DIR = join(PLUGIN_DIR, "templates")
 
 // ---------------------------------------------------------------------------
 // Bundled skill directory (shipped inside the npm package)
 // ---------------------------------------------------------------------------
 
-const BUNDLED_SKILL_DIR = join(dirname(import.meta.path), "skill")
-const PACKAGE_JSON_PATH = join(dirname(import.meta.path), "package.json")
+const BUNDLED_SKILL_DIR = join(PLUGIN_DIR, "skill")
+const PACKAGE_JSON_PATH = join(PLUGIN_DIR, "package.json")
 const INSTALL_VERSION_FILE = ".opencode-skill-creator-version"
+const GOLD_STANDARDS_PATH = join(
+  homedir(),
+  ".config",
+  "opencode",
+  "gold-standards.json",
+)
 
 const PACKAGE_VERSION = (() => {
   try {
@@ -261,6 +275,73 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
       }),
 
       // ---------------------------------------------------------------
+      // skill_add_gold_standard — save high-performing descriptions
+      // ---------------------------------------------------------------
+      skill_add_gold_standard: tool({
+        description:
+          "Save a durable gold-standard skill description example for future meta-learning experiments.",
+        args: {
+          skillName: tool.schema.string().describe("Skill name for this example"),
+          description: tool.schema
+            .string()
+            .describe("High-performing skill description"),
+          passRate: tool.schema
+            .number()
+            .describe("Observed pass rate as a decimal from 0 to 1"),
+          notes: tool.schema
+            .string()
+            .optional()
+            .describe("Optional notes about why this example worked"),
+        },
+        async execute(args) {
+          const standard = addGoldStandard(GOLD_STANDARDS_PATH, {
+            skillName: args.skillName,
+            description: args.description,
+            passRate: args.passRate,
+            notes: args.notes,
+          })
+          return JSON.stringify(standard, null, 2)
+        },
+      }),
+
+      // ---------------------------------------------------------------
+      // skill_list_gold_standards — list saved examples
+      // ---------------------------------------------------------------
+      skill_list_gold_standards: tool({
+        description: "List saved gold-standard skill description examples.",
+        args: {},
+        async execute() {
+          return JSON.stringify(listGoldStandards(GOLD_STANDARDS_PATH), null, 2)
+        },
+      }),
+
+      // ---------------------------------------------------------------
+      // skill_remove_gold_standard — remove a saved example
+      // ---------------------------------------------------------------
+      skill_remove_gold_standard: tool({
+        description: "Remove a saved gold-standard skill description example by id.",
+        args: {
+          id: tool.schema.string().describe("Gold-standard example id"),
+        },
+        async execute(args) {
+          return JSON.stringify({
+            removed: removeGoldStandard(GOLD_STANDARDS_PATH, args.id),
+          })
+        },
+      }),
+
+      // ---------------------------------------------------------------
+      // skill_get_gold_advice — format saved examples for prompt context
+      // ---------------------------------------------------------------
+      skill_get_gold_advice: tool({
+        description: "Return formatted gold-standard advice for description optimization prompts.",
+        args: {},
+        async execute() {
+          return JSON.stringify({ advice: getGoldAdvice(GOLD_STANDARDS_PATH) })
+        },
+      }),
+
+      // ---------------------------------------------------------------
       // skill_eval — run trigger evaluation for a skill description
       // ---------------------------------------------------------------
       skill_eval: tool({
@@ -297,6 +378,10 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .string()
             .optional()
             .describe("Model ID in provider/model format"),
+          agent: tool.schema
+            .string()
+            .optional()
+            .describe("OpenCode agent for trigger eval runs (default: build)"),
         },
         async execute(args) {
           const { readFileSync } = await import("fs")
@@ -322,6 +407,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             runsPerQuery: args.runsPerQuery ?? 3,
             triggerThreshold: args.triggerThreshold ?? 0.5,
             model: args.model,
+            agent: args.agent ?? "build",
           })
 
           return JSON.stringify(result, null, 2)
@@ -426,6 +512,10 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .string()
             .optional()
             .describe("Model ID in provider/model format"),
+          agent: tool.schema
+            .string()
+            .optional()
+            .describe("OpenCode agent for trigger eval runs (default: build)"),
           liveReportPath: tool.schema
             .string()
             .optional()
@@ -452,6 +542,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             triggerThreshold: args.triggerThreshold ?? 0.5,
             holdout: args.holdout ?? 0.4,
             model: args.model,
+            agent: args.agent ?? "build",
             verbose: true,
             liveReportPath: args.liveReportPath ?? null,
             logDir: args.logDir ?? null,
