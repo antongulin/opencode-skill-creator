@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { mkdir, rm } from "node:fs/promises"
+import { chmod, mkdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -233,6 +233,38 @@ test("global install clears stale OpenCode package cache", async () => {
 
     assert.equal(existsSync(packagePath), false)
     assert.match(result.stdout, /Cleared stale OpenCode package cache/)
+  })
+})
+
+test("global install continues when stale cache cleanup fails", async () => {
+  await withHome(async (home) => {
+    const path = configPath(home, "opencode.json")
+    writeFileSync(path, `{
+  "plugin": []
+}
+`, "utf-8")
+
+    const packagePath = cachedPackagePath(home)
+    await mkdir(packagePath, { recursive: true })
+    writeFileSync(join(packagePath, "package.json"), `{
+  "name": "opencode-skill-creator",
+  "version": "0.2.11",
+  "main": "./skill-creator.ts"
+}
+`, "utf-8")
+
+    writeFileSync(join(packagePath, "open-file"), "keep", "utf-8")
+
+    const packagesDir = join(packagePath, "..", "..", "..")
+    await chmod(packagesDir, 0o555)
+    try {
+      await assert.doesNotReject(runInstaller(home))
+    } finally {
+      await chmod(packagesDir, 0o755)
+    }
+
+    const updated = readFileSync(path, "utf-8")
+    assert.match(updated, /"opencode-skill-creator"/)
   })
 })
 

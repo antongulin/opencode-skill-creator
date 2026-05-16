@@ -115,7 +115,7 @@ function getConfigPath(globalInstall) {
 
 function clearStaleOpenCodePackageCache() {
   const currentVersion = getVersion()
-  if (currentVersion === "unknown") return false
+  if (currentVersion === "unknown") return { cleared: false, error: null }
 
   const cacheDir = process.env.XDG_CACHE_HOME || join(homedir(), ".cache")
   const packageCacheRoot = join(
@@ -131,17 +131,23 @@ function clearStaleOpenCodePackageCache() {
     "package.json"
   )
 
-  if (!existsSync(cachedPackageJson)) return false
+  if (!existsSync(cachedPackageJson)) return { cleared: false, error: null }
 
   try {
     const cachedPackage = JSON.parse(readFileSync(cachedPackageJson, "utf-8"))
-    if (cachedPackage.version === currentVersion) return false
+    if (cachedPackage.version === currentVersion) {
+      return { cleared: false, error: null }
+    }
   } catch {
     // Broken cache entries should be removed so OpenCode can recreate them.
   }
 
-  rmSync(packageCacheRoot, { recursive: true, force: true })
-  return true
+  try {
+    rmSync(packageCacheRoot, { recursive: true, force: true })
+    return { cleared: true, error: null }
+  } catch (error) {
+    return { cleared: false, error }
+  }
 }
 
 function getDesktopGlobalDataPath() {
@@ -292,8 +298,15 @@ function main() {
     console.log('"opencode-skill-creator" is already in the "plugin" array.')
   }
 
-  if (global && clearStaleOpenCodePackageCache()) {
-    console.log("Cleared stale OpenCode package cache for opencode-skill-creator.")
+  if (global) {
+    const cacheCleanup = clearStaleOpenCodePackageCache()
+    if (cacheCleanup.cleared) {
+      console.log("Cleared stale OpenCode package cache for opencode-skill-creator.")
+    } else if (cacheCleanup.error) {
+      console.warn(
+        `Could not clear stale OpenCode package cache: ${cacheCleanup.error.message}`
+      )
+    }
   }
 
   if (global) {
