@@ -20,6 +20,7 @@ export interface EnsureBundledSkillInstalledOptions {
   configDir: string
   packageVersion: string
   backupTimestamp?: () => string
+  onError?: (message: string, error: unknown) => void
 }
 
 function copyDirRecursive(src: string, dest: string): void {
@@ -131,8 +132,8 @@ export function ensureBundledSkillInstalled(
         backupTimestamp: options.backupTimestamp ?? defaultBackupTimestamp,
       })
     }
-  } catch {
-    // Silently fail — the user can always install manually.
+  } catch (error) {
+    options.onError?.("Failed to install opencode-skill-creator skill", error)
   } finally {
     if (existsSync(tmpInstallDir)) {
       rmSync(tmpInstallDir, { recursive: true, force: true })

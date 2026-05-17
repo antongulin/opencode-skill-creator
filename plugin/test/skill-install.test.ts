@@ -160,3 +160,24 @@ test("ensureBundledSkillInstalled keeps archiving legacy folders when a timestam
     )
   })
 })
+
+test("ensureBundledSkillInstalled reports install failures without throwing", () => {
+  withTempDir((root) => {
+    const bundledSkillDir = join(root, "not-a-directory")
+    const errors: Array<{ message: string; error: unknown }> = []
+    writeFileSync(bundledSkillDir, "not a directory")
+
+    expect(() =>
+      ensureBundledSkillInstalled({
+        bundledSkillDir,
+        configDir: join(root, "config"),
+        packageVersion: "1.2.3",
+        onError: (message, error) => errors.push({ message, error }),
+      }),
+    ).not.toThrow()
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toBe("Failed to install opencode-skill-creator skill")
+    expect(errors[0].error).toBeInstanceOf(Error)
+  })
+})

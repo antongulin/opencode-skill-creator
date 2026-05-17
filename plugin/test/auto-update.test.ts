@@ -94,6 +94,22 @@ test("auto update schedules stale cache clearing when plugin runs from that cach
   })
 })
 
+test("auto update treats non-numeric version parts explicitly as zero", async () => {
+  await withHome(async () => {
+    await writeCachedPackage("0.2.13")
+    const paths = getAutoUpdatePaths()
+
+    const result = await maybeAutoRefreshPluginCache({
+      currentVersion: "0.2.beta",
+      now: 1_000_000,
+      fetchImpl: registryFetch("0.2.1"),
+    })
+
+    expect(result).toEqual({ checked: true, cleared: true, reason: "newer-version" })
+    expect(existsSync(paths.packageCacheRoot)).toBe(false)
+  })
+})
+
 test("path containment check rejects Windows absolute paths outside the cache root", () => {
   expect(
     isInsidePath("C:\\Users\\me\\cache", "D:\\Users\\me\\other", win32),

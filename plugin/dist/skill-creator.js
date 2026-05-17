@@ -14633,7 +14633,9 @@ function ensureBundledSkillInstalled(options) {
         backupTimestamp: options.backupTimestamp ?? defaultBackupTimestamp
       });
     }
-  } catch {} finally {
+  } catch (error45) {
+    options.onError?.("Failed to install opencode-skill-creator skill", error45);
+  } finally {
     if (existsSync7(tmpInstallDir)) {
       rmSync2(tmpInstallDir, { recursive: true, force: true });
     }
@@ -14703,7 +14705,10 @@ function getAutoUpdatePaths() {
   };
 }
 function compareVersions(a, b) {
-  const parse6 = (value) => value.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const parse6 = (value) => value.split(".").map((part) => {
+    const parsed = Number.parseInt(part, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  });
   const left = parse6(a);
   const right = parse6(b);
   const length = Math.max(left.length, right.length);
@@ -14800,7 +14805,8 @@ var SkillCreatorPlugin = async (ctx) => {
   ensureBundledSkillInstalled({
     bundledSkillDir: BUNDLED_SKILL_DIR,
     configDir: process.env.XDG_CONFIG_HOME || join10(homedir(), ".config"),
-    packageVersion: PACKAGE_VERSION
+    packageVersion: PACKAGE_VERSION,
+    onError: (message, error45) => console.warn(message, error45)
   });
   maybeAutoRefreshPluginCache();
   return {

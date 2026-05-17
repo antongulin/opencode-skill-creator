@@ -188,7 +188,10 @@ export function getAutoUpdatePaths() {
 
 function compareVersions(a: string, b: string) {
   const parse = (value: string) =>
-    value.split(".").map((part) => Number.parseInt(part, 10) || 0)
+    value.split(".").map((part) => {
+      const parsed = Number.parseInt(part, 10)
+      return Number.isNaN(parsed) ? 0 : parsed
+    })
   const left = parse(a)
   const right = parse(b)
   const length = Math.max(left.length, right.length)
@@ -214,7 +217,8 @@ function writeAutoUpdateStatus(path: string, status: AutoUpdateStatus) {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, `${JSON.stringify(status, null, 2)}\n`, "utf-8")
   } catch {
-    // Best-effort status tracking only.
+    // Best-effort status tracking only. If this fails, the worst case is an
+    // extra registry check on a future startup; plugin startup must not fail.
   }
 }
 
@@ -243,7 +247,8 @@ function scheduleCacheClear(path: string) {
     try {
       rmSync(path, { recursive: true, force: true })
     } catch {
-      // Best-effort cache cleanup only.
+      // Best-effort cache cleanup only. A failed exit-time removal just leaves
+      // the stale cache for the next startup/update check.
     }
   })
 }
@@ -330,6 +335,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
     bundledSkillDir: BUNDLED_SKILL_DIR,
     configDir: process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
     packageVersion: PACKAGE_VERSION,
+    onError: (message, error) => console.warn(message, error),
   })
   void maybeAutoRefreshPluginCache()
 
