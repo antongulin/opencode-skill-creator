@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import {
   ensureBundledSkillInstalled,
   INSTALL_VERSION_FILE,
@@ -179,5 +179,38 @@ test("ensureBundledSkillInstalled reports install failures without throwing", ()
     expect(errors).toHaveLength(1)
     expect(errors[0].message).toBe("Failed to install opencode-skill-creator skill")
     expect(errors[0].error).toBeInstanceOf(Error)
+  })
+})
+
+test("ensureBundledSkillInstalled reports user skill backup failures before continuing", () => {
+  withTempDir((root) => {
+    const bundledSkillDir = createBundledSkill(root)
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const userSkillFile = join(skillsDir, "SKILL.md")
+    const userSkillBackup = join(skillsDir, "SKILL.md.user-backup")
+    const errors: Array<{ message: string; error: unknown }> = []
+
+    mkdirSync(dirname(userSkillFile), { recursive: true })
+    writeFileSync(userSkillFile, "user-customized skill\n")
+    mkdirSync(userSkillBackup)
+
+    ensureBundledSkillInstalled({
+      bundledSkillDir,
+      configDir,
+      packageVersion: "1.2.3",
+      onError: (message, error) => errors.push({ message, error }),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toBe(
+      `Failed to back up existing user skill file before updating ${SKILL_NAME}`,
+    )
+    expect(errors[0].error).toBeInstanceOf(Error)
+    expect(basename(userSkillBackup)).toBe("SKILL.md.user-backup")
+    expect(readFileSync(userSkillFile, "utf-8")).toBe("user-customized skill\n")
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe(
+      "1.2.3\n",
+    )
   })
 })

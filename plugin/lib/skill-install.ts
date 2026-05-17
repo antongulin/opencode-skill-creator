@@ -105,8 +105,11 @@ export function ensureBundledSkillInstalled(
       if (existsSync(userSkillFile)) {
         try {
           copyFileSync(userSkillFile, userSkillBackup)
-        } catch {
-          // Ignore backup failures; continue install.
+        } catch (error) {
+          options.onError?.(
+            `Failed to back up existing user skill file before updating ${SKILL_NAME}`,
+            error,
+          )
         }
 
         try {

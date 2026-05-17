@@ -14613,7 +14613,9 @@ function ensureBundledSkillInstalled(options) {
       if (existsSync7(userSkillFile)) {
         try {
           copyFileSync(userSkillFile, userSkillBackup);
-        } catch {}
+        } catch (error45) {
+          options.onError?.(`Failed to back up existing user skill file before updating ${SKILL_NAME}`, error45);
+        }
         try {
           copyFileSync(userSkillFile, join9(tmpInstallDir, "SKILL.md"));
         } catch {}
