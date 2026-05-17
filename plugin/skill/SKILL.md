@@ -1,9 +1,9 @@
 ---
-name: skill-creator
-description: Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+name: opencode-skill-creator
+description: Create, test, evaluate, optimize, and package OpenCode skills with the opencode-skill-creator plugin. Use when users explicitly mention opencode-skill-creator, OpenCode Skill Creator, creating an OpenCode skill, editing an OpenCode SKILL.md, running skill evals, benchmarking skill performance, or optimizing an OpenCode skill description. Do not use for generic Claude Code or Superpowers skill creation unless the user asks to port that workflow to OpenCode.
 ---
 
-# Skill Creator
+# OpenCode Skill Creator
 
 A skill for creating new skills and iteratively improving them.
 
@@ -379,7 +379,7 @@ The key thing to avoid: don't make should-not-trigger queries obviously irreleva
 
 Present the eval set to the user for review using the HTML template:
 
-1. Read the template from `templates/eval-review.html` (located in the skill-creator skill directory, alongside this SKILL.md)
+1. Read the template from `templates/eval-review.html` (located in the opencode-skill-creator skill directory, alongside this SKILL.md)
 2. Replace the placeholders:
    - `__EVAL_DATA_PLACEHOLDER__` → the JSON array of eval items (no quotes around it — it's a JS variable assignment)
    - `__SKILL_NAME_PLACEHOLDER__` → the skill's name
@@ -437,7 +437,7 @@ You can validate the skill before installation by calling the `skill_validate` t
 
 ## Available plugin tools
 
-The skill-creator plugin provides these custom tools that are available during your session:
+The opencode-skill-creator plugin provides these custom tools that are available during your session:
 
 - **`skill_validate`** — Validate a skill's SKILL.md structure and frontmatter
 - **`skill_parse`** — Parse a SKILL.md and return its name, description, and content length

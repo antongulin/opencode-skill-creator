@@ -14,20 +14,10 @@
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin"
-import { join, dirname } from "path"
+import { join, dirname, isAbsolute, relative, sep } from "path"
 import { homedir } from "os"
 import { fileURLToPath } from "url"
-import {
-  existsSync,
-  mkdirSync,
-  copyFileSync,
-  rmSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 
 import { validateSkill } from "./lib/validate"
 import { parseSkillMd } from "./lib/utils"
@@ -44,6 +34,7 @@ import {
   listGoldStandards,
   removeGoldStandard,
 } from "./lib/gold-standards"
+import { ensureBundledSkillInstalled } from "./lib/skill-install"
 
 import type { EvalItem } from "./lib/run-eval"
 
@@ -60,7 +51,10 @@ const TEMPLATES_DIR = join(PLUGIN_DIR, "templates")
 
 const BUNDLED_SKILL_DIR = join(PLUGIN_DIR, "skill")
 const PACKAGE_JSON_PATH = join(PLUGIN_DIR, "package.json")
-const INSTALL_VERSION_FILE = ".opencode-skill-creator-version"
+export const AUTO_UPDATE_TTL_MS = 24 * 60 * 60 * 1000
+export const AUTO_UPDATE_STATUS_FILE = "opencode-skill-creator-update-check.json"
+const NPM_REGISTRY_URL = "https://registry.npmjs.org/opencode-skill-creator/latest"
+const AUTO_UPDATE_TIMEOUT_MS = 2500
 const GOLD_STANDARDS_PATH = join(
   homedir(),
   ".config",
@@ -137,81 +131,191 @@ function prepareReviewLaunch(args: {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-install: copy bundled skill files to the global skills directory
-// ---------------------------------------------------------------------------
+type AutoUpdateResult = {
+  checked: boolean
+  cleared: boolean
+  reason:
+    | "disabled"
+    | "recently-checked"
+    | "newer-version"
+    | "scheduled-clear"
+    | "up-to-date"
+    | "missing-cache"
+    | "unknown-version"
+    | "error"
+}
 
-function copyDirRecursive(src: string, dest: string): void {
-  mkdirSync(dest, { recursive: true })
-  for (const entry of readdirSync(src)) {
-    const srcPath = join(src, entry)
-    const destPath = join(dest, entry)
-    if (statSync(srcPath).isDirectory()) {
-      copyDirRecursive(srcPath, destPath)
-    } else {
-      copyFileSync(srcPath, destPath)
-    }
+type AutoUpdateOptions = {
+  currentVersion?: string
+  currentPluginDir?: string
+  now?: number
+  fetchImpl?: typeof fetch
+  scheduleClearImpl?: (path: string) => void
+}
+
+type AutoUpdateStatus = {
+  lastCheckedAt?: number
+  currentVersion?: string
+  latestVersion?: string
+}
+
+export function getAutoUpdatePaths() {
+  const cacheDir = process.env.XDG_CACHE_HOME || join(homedir(), ".cache")
+  const configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
+  const packageCacheRoot = join(
+    cacheDir,
+    "opencode",
+    "packages",
+    "opencode-skill-creator@latest",
+  )
+
+  return {
+    packageCacheRoot,
+    cachedPackageDir: join(
+      packageCacheRoot,
+      "node_modules",
+      "opencode-skill-creator",
+    ),
+    cachedPackageJson: join(
+      packageCacheRoot,
+      "node_modules",
+      "opencode-skill-creator",
+      "package.json",
+    ),
+    statusPath: join(configDir, "opencode", AUTO_UPDATE_STATUS_FILE),
   }
 }
 
-function ensureSkillInstalled(): void {
-  // Determine the global skills directory
-  const configDir =
-    process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
-  const skillsDir = join(configDir, "opencode", "skills", "skill-creator")
-  const marker = join(skillsDir, "SKILL.md")
-  const versionFile = join(skillsDir, INSTALL_VERSION_FILE)
-  const userSkillFile = join(skillsDir, "SKILL.md")
-  const userSkillBackup = join(skillsDir, "SKILL.md.user-backup")
+function compareVersions(a: string, b: string) {
+  const parse = (value: string) =>
+    value.split(".").map((part) => {
+      const parsed = Number.parseInt(part, 10)
+      return Number.isNaN(parsed) ? 0 : parsed
+    })
+  const left = parse(a)
+  const right = parse(b)
+  const length = Math.max(left.length, right.length)
 
-  // Skip if bundled skill files are missing (e.g., local dev without skill/)
-  if (!existsSync(BUNDLED_SKILL_DIR)) return
-
-  // Install/update when missing, or when package version changed.
-  let installedVersion = ""
-  if (existsSync(versionFile)) {
-    try {
-      installedVersion = readFileSync(versionFile, "utf-8").trim()
-    } catch {
-      installedVersion = ""
-    }
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0)
+    if (diff !== 0) return diff > 0 ? 1 : -1
   }
 
-  const shouldInstall = !existsSync(marker) || installedVersion !== PACKAGE_VERSION
-  if (!shouldInstall) return
+  return 0
+}
 
-  const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-
+function readAutoUpdateStatus(path: string): AutoUpdateStatus {
   try {
-    copyDirRecursive(BUNDLED_SKILL_DIR, tmpInstallDir)
-
-    // Preserve user-customized SKILL.md when updating.
-    if (existsSync(userSkillFile)) {
-      try {
-        copyFileSync(userSkillFile, userSkillBackup)
-      } catch {
-        // Ignore backup failures; continue install.
-      }
-
-      try {
-        copyFileSync(userSkillFile, join(tmpInstallDir, "SKILL.md"))
-      } catch {
-        // If copy fails, continue with bundled SKILL.md.
-      }
-    }
-
-    if (!existsSync(skillsDir)) {
-      renameSync(tmpInstallDir, skillsDir)
-    } else {
-      copyDirRecursive(tmpInstallDir, skillsDir)
-    }
-
-    writeFileSync(versionFile, `${PACKAGE_VERSION}\n`)
+    return JSON.parse(readFileSync(path, "utf-8")) as AutoUpdateStatus
   } catch {
-    // Silently fail — the user can always install manually
-  } finally {
-    if (existsSync(tmpInstallDir)) {
-      rmSync(tmpInstallDir, { recursive: true, force: true })
+    return {}
+  }
+}
+
+function writeAutoUpdateStatus(path: string, status: AutoUpdateStatus) {
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, `${JSON.stringify(status, null, 2)}\n`, "utf-8")
+  } catch {
+    // Best-effort status tracking only. If this fails, the worst case is an
+    // extra registry check on a future startup; plugin startup must not fail.
+  }
+}
+
+export function isInsidePath(
+  parent: string,
+  child: string,
+  pathModule: Pick<typeof import("path"), "isAbsolute" | "relative" | "sep"> = {
+    isAbsolute,
+    relative,
+    sep,
+  },
+) {
+  const rel = pathModule.relative(parent, child)
+  return (
+    rel === "" ||
+    (!rel.startsWith("..") &&
+      !pathModule.isAbsolute(rel) &&
+      !rel.startsWith("/") &&
+      !rel.startsWith("\\") &&
+      !rel.includes(`..${pathModule.sep}`))
+  )
+}
+
+function scheduleCacheClear(path: string) {
+  process.once("exit", () => {
+    try {
+      rmSync(path, { recursive: true, force: true })
+    } catch {
+      // Best-effort cache cleanup only. A failed exit-time removal just leaves
+      // the stale cache for the next startup/update check.
     }
+  })
+}
+
+export async function maybeAutoRefreshPluginCache(
+  options: AutoUpdateOptions = {},
+): Promise<AutoUpdateResult> {
+  try {
+    if (process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE === "0") {
+      return { checked: false, cleared: false, reason: "disabled" }
+    }
+
+    const currentVersion = options.currentVersion ?? PACKAGE_VERSION
+    if (currentVersion === "0.0.0") {
+      return { checked: false, cleared: false, reason: "unknown-version" }
+    }
+
+    const paths = getAutoUpdatePaths()
+    const now = options.now ?? Date.now()
+    const status = readAutoUpdateStatus(paths.statusPath)
+    if (
+      typeof status.lastCheckedAt === "number" &&
+      now - status.lastCheckedAt < AUTO_UPDATE_TTL_MS
+    ) {
+      return { checked: false, cleared: false, reason: "recently-checked" }
+    }
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), AUTO_UPDATE_TIMEOUT_MS)
+
+    try {
+      const response = await (options.fetchImpl ?? fetch)(NPM_REGISTRY_URL, {
+        signal: controller.signal,
+      })
+      if (!response.ok) return { checked: false, cleared: false, reason: "error" }
+
+      const metadata = (await response.json()) as { version?: string }
+      const latestVersion = metadata.version
+      if (!latestVersion) return { checked: false, cleared: false, reason: "error" }
+
+      writeAutoUpdateStatus(paths.statusPath, {
+        lastCheckedAt: now,
+        currentVersion,
+        latestVersion,
+      })
+
+      if (compareVersions(latestVersion, currentVersion) <= 0) {
+        return { checked: true, cleared: false, reason: "up-to-date" }
+      }
+
+      if (!existsSync(paths.cachedPackageJson)) {
+        return { checked: true, cleared: false, reason: "missing-cache" }
+      }
+
+      const currentPluginDir = options.currentPluginDir ?? PLUGIN_DIR
+      if (isInsidePath(paths.packageCacheRoot, currentPluginDir)) {
+        ;(options.scheduleClearImpl ?? scheduleCacheClear)(paths.packageCacheRoot)
+        return { checked: true, cleared: false, reason: "scheduled-clear" }
+      }
+
+      rmSync(paths.packageCacheRoot, { recursive: true, force: true })
+      return { checked: true, cleared: true, reason: "newer-version" }
+    } finally {
+      clearTimeout(timeout)
+    }
+  } catch {
+    return { checked: false, cleared: false, reason: "error" }
   }
 }
 
@@ -226,8 +330,14 @@ const activeServers: Map<string, { stop: () => void; url: string }> = new Map()
 // ---------------------------------------------------------------------------
 
 export const SkillCreatorPlugin: Plugin = async (ctx) => {
-  // Auto-install bundled skill files to ~/.config/opencode/skills/skill-creator/
-  ensureSkillInstalled()
+  // Auto-install bundled skill files to ~/.config/opencode/skills/opencode-skill-creator/
+  ensureBundledSkillInstalled({
+    bundledSkillDir: BUNDLED_SKILL_DIR,
+    configDir: process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
+    packageVersion: PACKAGE_VERSION,
+    onError: (message, error) => console.warn(message, error),
+  })
+  void maybeAutoRefreshPluginCache()
 
   return {
     tool: {

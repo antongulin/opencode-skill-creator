@@ -1,6 +1,16 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
@@ -59,10 +69,90 @@ test("built package includes runtime assets", () => {
   }
 })
 
+test("bundled skill uses the opencode-specific skill name", () => {
+  const sourceSkill = readFileSync(
+    fileURLToPath(new URL("../skill/SKILL.md", import.meta.url)),
+    "utf-8",
+  )
+  const distSkill = readFileSync(
+    fileURLToPath(new URL("../dist/skill/SKILL.md", import.meta.url)),
+    "utf-8",
+  )
+
+  assert.match(sourceSkill, /^name: opencode-skill-creator$/m)
+  assert.match(distSkill, /^name: opencode-skill-creator$/m)
+})
+
 test("compiled entrypoint imports as a plugin function", async () => {
   const mod = await import(distEntryPath)
 
   assert.equal(typeof mod.default, "function")
+})
+
+test("compiled plugin startup installs renamed skill and archives plugin-owned legacy skill", async () => {
+  const tempHome = mkdtempSync(join(tmpdir(), "osc-compiled-plugin-"))
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+
+  try {
+    const legacySkillDir = join(
+      tempHome,
+      "opencode",
+      "skills",
+      "skill-creator",
+    )
+    mkdirSync(legacySkillDir, { recursive: true })
+    writeFileSync(join(legacySkillDir, ".opencode-skill-creator-version"), "0.2.12\n")
+    writeFileSync(join(legacySkillDir, "SKILL.md"), "legacy plugin-owned skill\n")
+
+    process.env.XDG_CONFIG_HOME = tempHome
+
+    const mod = await import(`${distEntryPath}?startup=${Date.now()}`)
+    const hooks = await mod.default({})
+
+    const newSkillDir = join(
+      tempHome,
+      "opencode",
+      "skills",
+      "opencode-skill-creator",
+    )
+    const backupDirs = readdirSync(join(tempHome, "opencode", "skills")).filter(
+      (entry) => entry.startsWith("skill-creator.opencode-skill-creator-backup-"),
+    )
+
+    assert.equal(typeof hooks.tool.skill_validate.execute, "function")
+    assert.equal(existsSync(join(newSkillDir, "SKILL.md")), true)
+    assert.match(
+      readFileSync(join(newSkillDir, "SKILL.md"), "utf-8"),
+      /^name: opencode-skill-creator$/m,
+    )
+    assert.equal(existsSync(legacySkillDir), false)
+    assert.equal(backupDirs.length, 1)
+    assert.equal(
+      existsSync(
+        join(
+          tempHome,
+          "opencode",
+          "skills",
+          backupDirs[0],
+          "SKILL.md.backup",
+        ),
+      ),
+      true,
+    )
+    assert.equal(
+      existsSync(
+        join(tempHome, "opencode", "skills", backupDirs[0], "SKILL.md"),
+      ),
+      false,
+    )
+  } finally {
+    if (previousXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+    }
+    rmSync(tempHome, { recursive: true, force: true })
+  }
 })
 
 test("compiled artifact manifest matches current TypeScript sources", () => {

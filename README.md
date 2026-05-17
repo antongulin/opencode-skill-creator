@@ -156,7 +156,7 @@ git clone https://github.com/antongulin/opencode-skill-creator.git
 cd opencode-skill-creator
 
 # Install the skill (global)
-cp -r skill-creator/ ~/.config/opencode/skills/skill-creator/
+cp -r opencode-skill-creator/ ~/.config/opencode/skills/opencode-skill-creator/
 
 # Install the plugin (global)
 cp -r plugin/ ~/.config/opencode/plugins/skill-creator/
@@ -178,7 +178,7 @@ After you add `opencode-skill-creator` and restart OpenCode:
 
 1. OpenCode installs the plugin from npm automatically.
 2. The npm package loads compiled JavaScript from `dist/skill-creator.js`.
-3. On first plugin startup, it auto-copies skill files to `~/.config/opencode/skills/skill-creator/`.
+3. On first plugin startup, it auto-copies skill files to `~/.config/opencode/skills/opencode-skill-creator/`.
 4. Restart OpenCode after changing config because plugin config is loaded at startup.
 
 ### Verify install
@@ -186,23 +186,36 @@ After you add `opencode-skill-creator` and restart OpenCode:
 Check that the skill file exists:
 
 ```bash
-ls ~/.config/opencode/skills/skill-creator/SKILL.md
+ls ~/.config/opencode/skills/opencode-skill-creator/SKILL.md
 ```
 
 Then ask OpenCode:
 
 ```text
-Create a skill that helps with API documentation.
+Use opencode-skill-creator to create a skill that helps with API documentation.
 ```
 
-You should see it use the skill-creator workflow/tools.
+You should see it use the opencode-skill-creator workflow/tools.
+
+### Migration from the old `skill-creator` folder
+
+Earlier versions installed the bundled skill as the generic `skill-creator` skill. That could conflict with other plugins, including Superpowers, that also provide a skill with the same name.
+
+Current versions install the bundled skill as `opencode-skill-creator` instead. On startup, if the plugin finds an old plugin-owned folder at `~/.config/opencode/skills/skill-creator/`, it moves that folder to an inactive backup such as:
+
+```text
+~/.config/opencode/skills/skill-creator.opencode-skill-creator-backup-YYYYMMDDTHHMMSS/
+```
+
+The backup preserves user files and renames `SKILL.md` to `SKILL.md.backup` so OpenCode will not keep loading the old generic skill. If the old `skill-creator` folder does not contain the plugin's `.opencode-skill-creator-version` marker, the plugin leaves it untouched because it may belong to another plugin or a manually installed skill.
 
 ### Troubleshooting
 
 - `I don't have opencode.jsonc/opencode.json`: create one in project root (or use global config path).
 - `Nothing changed after edit`: fully restart OpenCode.
 - `I already had plugins`: keep them; just add `opencode-skill-creator` to the same array.
-- `I want a clean reinstall`: delete `~/.config/opencode/skills/skill-creator/` and restart OpenCode.
+- `I want a clean reinstall`: delete `~/.config/opencode/skills/opencode-skill-creator/` and restart OpenCode.
+- `I still see another skill-creator skill`: if `~/.config/opencode/skills/skill-creator/` has no `.opencode-skill-creator-version` marker, it is not managed by this plugin and must be reviewed separately.
 - `npx command failed`: run `npx opencode-skill-creator --help` and then use `install` or `install --global`.
 
 ### For LLMs / automation (compact)
@@ -286,7 +299,7 @@ Once installed, OpenCode will automatically detect the skill when you ask it to 
 - "Help me make a skill that assists with database migrations"
 - "Optimize the description of my existing skill"
 
-OpenCode will load the skill-creator instructions and use the plugin tools to walk through the full workflow.
+OpenCode will load the opencode-skill-creator instructions and use the plugin tools to walk through the full workflow.
 
 ## Architecture
 
@@ -299,7 +312,7 @@ This project has two components:
 
 The skill provides the workflow knowledge; the plugin provides the executable tools the agent calls during that workflow.
 
-On first startup, the plugin automatically copies the bundled skill files to `~/.config/opencode/skills/skill-creator/`. If you need to reinstall the skill (e.g., after an update), delete that directory and restart OpenCode.
+On first startup, the plugin automatically copies the bundled skill files to `~/.config/opencode/skills/opencode-skill-creator/`. If you need to reinstall the skill (e.g., after an update), delete that directory and restart OpenCode.
 
 ## Project structure
 
@@ -307,7 +320,7 @@ On first startup, the plugin automatically copies the bundled skill files to `~/
 opencode-skill-creator/
 ├── README.md
 ├── LICENSE                            # Apache 2.0
-├── skill-creator/                     # The SKILL
+├── opencode-skill-creator/            # The SKILL
 │   ├── SKILL.md                       # Main skill instructions
 │   ├── agents/
 │   │   ├── grader.md                  # Assertion evaluation

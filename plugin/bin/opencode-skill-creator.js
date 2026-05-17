@@ -323,7 +323,7 @@ function main() {
   console.log("1) Restart OpenCode")
   console.log("2) Ask: Create a skill that helps with API documentation")
   console.log(
-    "\nOn first startup, the plugin auto-installs skill files to ~/.config/opencode/skills/skill-creator/"
+    "\nOn first startup, the plugin auto-installs skill files to ~/.config/opencode/skills/opencode-skill-creator/"
   )
 }
 

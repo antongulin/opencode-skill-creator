@@ -12336,20 +12336,10 @@ function tool(input) {
 }
 tool.schema = exports_external;
 // skill-creator.ts
-import { join as join9, dirname as dirname3 } from "path";
+import { join as join10, dirname as dirname3, isAbsolute, relative as relative2, sep } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
-import {
-  existsSync as existsSync7,
-  mkdirSync as mkdirSync5,
-  copyFileSync,
-  rmSync as rmSync2,
-  readdirSync as readdirSync4,
-  readFileSync as readFileSync6,
-  renameSync as renameSync2,
-  statSync as statSync4,
-  writeFileSync as writeFileSync7
-} from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync7, rmSync as rmSync3, writeFileSync as writeFileSync8 } from "fs";
 
 // lib/validate.ts
 import { existsSync, readFileSync } from "fs";
@@ -14544,16 +14534,129 @@ function getGoldAdvice(path) {
 `);
 }
 
+// lib/skill-install.ts
+import {
+  copyFileSync,
+  existsSync as existsSync7,
+  mkdirSync as mkdirSync5,
+  readdirSync as readdirSync4,
+  readFileSync as readFileSync6,
+  renameSync as renameSync2,
+  rmSync as rmSync2,
+  statSync as statSync4,
+  writeFileSync as writeFileSync7
+} from "fs";
+import { join as join9 } from "path";
+var SKILL_NAME = "opencode-skill-creator";
+var LEGACY_SKILL_NAME = "skill-creator";
+var INSTALL_VERSION_FILE = ".opencode-skill-creator-version";
+function copyDirRecursive(src, dest) {
+  mkdirSync5(dest, { recursive: true });
+  for (const entry of readdirSync4(src)) {
+    const srcPath = join9(src, entry);
+    const destPath = join9(dest, entry);
+    if (statSync4(srcPath).isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+    } else {
+      copyFileSync(srcPath, destPath);
+    }
+  }
+}
+function defaultBackupTimestamp() {
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "");
+}
+function uniqueBackupDir(skillsRoot, timestamp) {
+  const base = join9(skillsRoot, `${LEGACY_SKILL_NAME}.opencode-skill-creator-backup-${timestamp}`);
+  if (!existsSync7(base))
+    return base;
+  for (let index = 1;index < 1000; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existsSync7(candidate))
+      return candidate;
+  }
+  throw new Error("Could not find an available legacy skill backup path");
+}
+function archiveLegacySkill(args) {
+  const legacyVersionFile = join9(args.legacySkillDir, INSTALL_VERSION_FILE);
+  if (!existsSync7(legacyVersionFile))
+    return;
+  const backupDir = uniqueBackupDir(args.skillsRoot, args.backupTimestamp());
+  const backupSkillFile = join9(args.legacySkillDir, "SKILL.md");
+  if (existsSync7(backupSkillFile)) {
+    renameSync2(backupSkillFile, join9(args.legacySkillDir, "SKILL.md.backup"));
+  }
+  renameSync2(args.legacySkillDir, backupDir);
+}
+function ensureBundledSkillInstalled(options) {
+  const skillsRoot = join9(options.configDir, "opencode", "skills");
+  const skillsDir = join9(skillsRoot, SKILL_NAME);
+  const legacySkillDir = join9(skillsRoot, LEGACY_SKILL_NAME);
+  const marker = join9(skillsDir, "SKILL.md");
+  const versionFile = join9(skillsDir, INSTALL_VERSION_FILE);
+  const userSkillFile = join9(skillsDir, "SKILL.md");
+  const userSkillBackup = join9(skillsDir, "SKILL.md.user-backup");
+  if (!existsSync7(options.bundledSkillDir))
+    return;
+  let installedVersion = "";
+  if (existsSync7(versionFile)) {
+    try {
+      installedVersion = readFileSync6(versionFile, "utf-8").trim();
+    } catch {
+      installedVersion = "";
+    }
+  }
+  const shouldInstall = !existsSync7(marker) || installedVersion !== options.packageVersion;
+  const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    if (shouldInstall) {
+      copyDirRecursive(options.bundledSkillDir, tmpInstallDir);
+      if (existsSync7(userSkillFile)) {
+        try {
+          copyFileSync(userSkillFile, userSkillBackup);
+        } catch (error45) {
+          options.onError?.(`Failed to back up existing user skill file before updating ${SKILL_NAME}`, error45);
+        }
+        try {
+          copyFileSync(userSkillFile, join9(tmpInstallDir, "SKILL.md"));
+        } catch {}
+      }
+      if (!existsSync7(skillsDir)) {
+        renameSync2(tmpInstallDir, skillsDir);
+      } else {
+        copyDirRecursive(tmpInstallDir, skillsDir);
+      }
+      writeFileSync7(versionFile, `${options.packageVersion}
+`);
+    }
+    if (existsSync7(legacySkillDir)) {
+      archiveLegacySkill({
+        skillsRoot,
+        legacySkillDir,
+        backupTimestamp: options.backupTimestamp ?? defaultBackupTimestamp
+      });
+    }
+  } catch (error45) {
+    options.onError?.("Failed to install opencode-skill-creator skill", error45);
+  } finally {
+    if (existsSync7(tmpInstallDir)) {
+      rmSync2(tmpInstallDir, { recursive: true, force: true });
+    }
+  }
+}
+
 // skill-creator.ts
 var PLUGIN_DIR = dirname3(fileURLToPath(import.meta.url));
-var TEMPLATES_DIR = join9(PLUGIN_DIR, "templates");
-var BUNDLED_SKILL_DIR = join9(PLUGIN_DIR, "skill");
-var PACKAGE_JSON_PATH = join9(PLUGIN_DIR, "package.json");
-var INSTALL_VERSION_FILE = ".opencode-skill-creator-version";
-var GOLD_STANDARDS_PATH = join9(homedir(), ".config", "opencode", "gold-standards.json");
+var TEMPLATES_DIR = join10(PLUGIN_DIR, "templates");
+var BUNDLED_SKILL_DIR = join10(PLUGIN_DIR, "skill");
+var PACKAGE_JSON_PATH = join10(PLUGIN_DIR, "package.json");
+var AUTO_UPDATE_TTL_MS = 24 * 60 * 60 * 1000;
+var AUTO_UPDATE_STATUS_FILE = "opencode-skill-creator-update-check.json";
+var NPM_REGISTRY_URL = "https://registry.npmjs.org/opencode-skill-creator/latest";
+var AUTO_UPDATE_TIMEOUT_MS = 2500;
+var GOLD_STANDARDS_PATH = join10(homedir(), ".config", "opencode", "gold-standards.json");
 var PACKAGE_VERSION = (() => {
   try {
-    const pkg = JSON.parse(readFileSync6(PACKAGE_JSON_PATH, "utf-8"));
+    const pkg = JSON.parse(readFileSync7(PACKAGE_JSON_PATH, "utf-8"));
     return pkg.version ?? "0.0.0";
   } catch {
     return "0.0.0";
@@ -14576,10 +14679,10 @@ function prepareReviewLaunch(args) {
   if (!resolvedBenchmarkPath) {
     try {
       const benchmark = generateBenchmark(args.workspace, args.skillName ?? "", "");
-      const jsonPath = join9(args.workspace, "benchmark.json");
-      const mdPath = join9(args.workspace, "benchmark.md");
-      writeFileSync7(jsonPath, JSON.stringify(benchmark, null, 2));
-      writeFileSync7(mdPath, generateMarkdown(benchmark));
+      const jsonPath = join10(args.workspace, "benchmark.json");
+      const mdPath = join10(args.workspace, "benchmark.md");
+      writeFileSync8(jsonPath, JSON.stringify(benchmark, null, 2));
+      writeFileSync8(mdPath, generateMarkdown(benchmark));
       resolvedBenchmarkPath = jsonPath;
     } catch {
       resolvedBenchmarkPath = null;
@@ -14592,65 +14695,122 @@ function prepareReviewLaunch(args) {
     benchmarkPath: resolvedBenchmarkPath
   };
 }
-function copyDirRecursive(src, dest) {
-  mkdirSync5(dest, { recursive: true });
-  for (const entry of readdirSync4(src)) {
-    const srcPath = join9(src, entry);
-    const destPath = join9(dest, entry);
-    if (statSync4(srcPath).isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
-    } else {
-      copyFileSync(srcPath, destPath);
-    }
+function getAutoUpdatePaths() {
+  const cacheDir = process.env.XDG_CACHE_HOME || join10(homedir(), ".cache");
+  const configDir = process.env.XDG_CONFIG_HOME || join10(homedir(), ".config");
+  const packageCacheRoot = join10(cacheDir, "opencode", "packages", "opencode-skill-creator@latest");
+  return {
+    packageCacheRoot,
+    cachedPackageDir: join10(packageCacheRoot, "node_modules", "opencode-skill-creator"),
+    cachedPackageJson: join10(packageCacheRoot, "node_modules", "opencode-skill-creator", "package.json"),
+    statusPath: join10(configDir, "opencode", AUTO_UPDATE_STATUS_FILE)
+  };
+}
+function compareVersions(a, b) {
+  const parse6 = (value) => value.split(".").map((part) => {
+    const parsed = Number.parseInt(part, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  });
+  const left = parse6(a);
+  const right = parse6(b);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0;index < length; index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0);
+    if (diff !== 0)
+      return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+function readAutoUpdateStatus(path) {
+  try {
+    return JSON.parse(readFileSync7(path, "utf-8"));
+  } catch {
+    return {};
   }
 }
-function ensureSkillInstalled() {
-  const configDir = process.env.XDG_CONFIG_HOME || join9(homedir(), ".config");
-  const skillsDir = join9(configDir, "opencode", "skills", "skill-creator");
-  const marker = join9(skillsDir, "SKILL.md");
-  const versionFile = join9(skillsDir, INSTALL_VERSION_FILE);
-  const userSkillFile = join9(skillsDir, "SKILL.md");
-  const userSkillBackup = join9(skillsDir, "SKILL.md.user-backup");
-  if (!existsSync7(BUNDLED_SKILL_DIR))
-    return;
-  let installedVersion = "";
-  if (existsSync7(versionFile)) {
-    try {
-      installedVersion = readFileSync6(versionFile, "utf-8").trim();
-    } catch {
-      installedVersion = "";
-    }
-  }
-  const shouldInstall = !existsSync7(marker) || installedVersion !== PACKAGE_VERSION;
-  if (!shouldInstall)
-    return;
-  const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+function writeAutoUpdateStatus(path, status) {
   try {
-    copyDirRecursive(BUNDLED_SKILL_DIR, tmpInstallDir);
-    if (existsSync7(userSkillFile)) {
-      try {
-        copyFileSync(userSkillFile, userSkillBackup);
-      } catch {}
-      try {
-        copyFileSync(userSkillFile, join9(tmpInstallDir, "SKILL.md"));
-      } catch {}
+    mkdirSync6(dirname3(path), { recursive: true });
+    writeFileSync8(path, `${JSON.stringify(status, null, 2)}
+`, "utf-8");
+  } catch {}
+}
+function isInsidePath(parent, child, pathModule = {
+  isAbsolute,
+  relative: relative2,
+  sep
+}) {
+  const rel = pathModule.relative(parent, child);
+  return rel === "" || !rel.startsWith("..") && !pathModule.isAbsolute(rel) && !rel.startsWith("/") && !rel.startsWith("\\") && !rel.includes(`..${pathModule.sep}`);
+}
+function scheduleCacheClear(path) {
+  process.once("exit", () => {
+    try {
+      rmSync3(path, { recursive: true, force: true });
+    } catch {}
+  });
+}
+async function maybeAutoRefreshPluginCache(options = {}) {
+  try {
+    if (process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE === "0") {
+      return { checked: false, cleared: false, reason: "disabled" };
     }
-    if (!existsSync7(skillsDir)) {
-      renameSync2(tmpInstallDir, skillsDir);
-    } else {
-      copyDirRecursive(tmpInstallDir, skillsDir);
+    const currentVersion = options.currentVersion ?? PACKAGE_VERSION;
+    if (currentVersion === "0.0.0") {
+      return { checked: false, cleared: false, reason: "unknown-version" };
     }
-    writeFileSync7(versionFile, `${PACKAGE_VERSION}
-`);
-  } catch {} finally {
-    if (existsSync7(tmpInstallDir)) {
-      rmSync2(tmpInstallDir, { recursive: true, force: true });
+    const paths = getAutoUpdatePaths();
+    const now = options.now ?? Date.now();
+    const status = readAutoUpdateStatus(paths.statusPath);
+    if (typeof status.lastCheckedAt === "number" && now - status.lastCheckedAt < AUTO_UPDATE_TTL_MS) {
+      return { checked: false, cleared: false, reason: "recently-checked" };
     }
+    const controller = new AbortController;
+    const timeout = setTimeout(() => controller.abort(), AUTO_UPDATE_TIMEOUT_MS);
+    try {
+      const response = await (options.fetchImpl ?? fetch)(NPM_REGISTRY_URL, {
+        signal: controller.signal
+      });
+      if (!response.ok)
+        return { checked: false, cleared: false, reason: "error" };
+      const metadata = await response.json();
+      const latestVersion = metadata.version;
+      if (!latestVersion)
+        return { checked: false, cleared: false, reason: "error" };
+      writeAutoUpdateStatus(paths.statusPath, {
+        lastCheckedAt: now,
+        currentVersion,
+        latestVersion
+      });
+      if (compareVersions(latestVersion, currentVersion) <= 0) {
+        return { checked: true, cleared: false, reason: "up-to-date" };
+      }
+      if (!existsSync8(paths.cachedPackageJson)) {
+        return { checked: true, cleared: false, reason: "missing-cache" };
+      }
+      const currentPluginDir = options.currentPluginDir ?? PLUGIN_DIR;
+      if (isInsidePath(paths.packageCacheRoot, currentPluginDir)) {
+        (options.scheduleClearImpl ?? scheduleCacheClear)(paths.packageCacheRoot);
+        return { checked: true, cleared: false, reason: "scheduled-clear" };
+      }
+      rmSync3(paths.packageCacheRoot, { recursive: true, force: true });
+      return { checked: true, cleared: true, reason: "newer-version" };
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return { checked: false, cleared: false, reason: "error" };
   }
 }
 var activeServers = new Map;
 var SkillCreatorPlugin = async (ctx) => {
-  ensureSkillInstalled();
+  ensureBundledSkillInstalled({
+    bundledSkillDir: BUNDLED_SKILL_DIR,
+    configDir: process.env.XDG_CONFIG_HOME || join10(homedir(), ".config"),
+    packageVersion: PACKAGE_VERSION,
+    onError: (message, error45) => console.warn(message, error45)
+  });
+  maybeAutoRefreshPluginCache();
   return {
     tool: {
       skill_validate: tool({
@@ -14735,8 +14895,8 @@ var SkillCreatorPlugin = async (ctx) => {
           agent: tool.schema.string().optional().describe("OpenCode agent for trigger eval runs (default: build)")
         },
         async execute(args) {
-          const { readFileSync: readFileSync7 } = await import("fs");
-          const evalSet = JSON.parse(readFileSync7(args.evalSetPath, "utf-8"));
+          const { readFileSync: readFileSync8 } = await import("fs");
+          const evalSet = JSON.parse(readFileSync8(args.evalSetPath, "utf-8"));
           const validation = validateSkill(args.skillPath);
           if (!validation.valid) {
             throw new Error(`Invalid skill at ${args.skillPath}: ${validation.message}`);
@@ -14769,10 +14929,10 @@ var SkillCreatorPlugin = async (ctx) => {
           iteration: tool.schema.number().optional().describe("Current iteration number")
         },
         async execute(args) {
-          const { readFileSync: readFileSync7 } = await import("fs");
+          const { readFileSync: readFileSync8 } = await import("fs");
           const meta = parseSkillMd(args.skillPath);
-          const evalResults = JSON.parse(readFileSync7(args.evalResultsPath, "utf-8"));
-          const history = args.historyPath ? JSON.parse(readFileSync7(args.historyPath, "utf-8")) : [];
+          const evalResults = JSON.parse(readFileSync8(args.evalResultsPath, "utf-8"));
+          const history = args.historyPath ? JSON.parse(readFileSync8(args.historyPath, "utf-8")) : [];
           const newDescription = await improveDescription({
             skillName: meta.name,
             skillContent: meta.fullContent,
@@ -14804,8 +14964,8 @@ var SkillCreatorPlugin = async (ctx) => {
           logDir: tool.schema.string().optional().describe("Directory for improvement transcripts")
         },
         async execute(args) {
-          const { readFileSync: readFileSync7 } = await import("fs");
-          const evalSet = JSON.parse(readFileSync7(args.evalSetPath, "utf-8"));
+          const { readFileSync: readFileSync8 } = await import("fs");
+          const evalSet = JSON.parse(readFileSync8(args.evalSetPath, "utf-8"));
           const result = await runLoop({
             evalSet,
             skillPath: args.skillPath,
@@ -14835,12 +14995,12 @@ var SkillCreatorPlugin = async (ctx) => {
           markdownPath: tool.schema.string().optional().describe("Path to write benchmark.md (default: <benchmarkDir>/benchmark.md)")
         },
         async execute(args) {
-          const { writeFileSync: writeFileSync8 } = await import("fs");
+          const { writeFileSync: writeFileSync9 } = await import("fs");
           const benchmark = generateBenchmark(args.benchmarkDir, args.skillName ?? "", args.skillPath ?? "");
-          const jsonPath = args.outputPath ?? join9(args.benchmarkDir, "benchmark.json");
-          writeFileSync8(jsonPath, JSON.stringify(benchmark, null, 2));
-          const mdPath = args.markdownPath ?? join9(args.benchmarkDir, "benchmark.md");
-          writeFileSync8(mdPath, generateMarkdown(benchmark));
+          const jsonPath = args.outputPath ?? join10(args.benchmarkDir, "benchmark.json");
+          writeFileSync9(jsonPath, JSON.stringify(benchmark, null, 2));
+          const mdPath = args.markdownPath ?? join10(args.benchmarkDir, "benchmark.md");
+          writeFileSync9(mdPath, generateMarkdown(benchmark));
           return JSON.stringify({
             benchmarkJsonPath: jsonPath,
             benchmarkMdPath: mdPath,
@@ -14857,13 +15017,13 @@ var SkillCreatorPlugin = async (ctx) => {
           autoRefresh: tool.schema.boolean().optional().describe("Add auto-refresh meta tag (default: false)")
         },
         async execute(args) {
-          const { readFileSync: readFileSync7, writeFileSync: writeFileSync8 } = await import("fs");
-          const data = JSON.parse(readFileSync7(args.dataPath, "utf-8"));
+          const { readFileSync: readFileSync8, writeFileSync: writeFileSync9 } = await import("fs");
+          const data = JSON.parse(readFileSync8(args.dataPath, "utf-8"));
           const html = generateHtml(data, {
             autoRefresh: args.autoRefresh ?? false,
             skillName: args.skillName ?? ""
           });
-          writeFileSync8(args.outputPath, html);
+          writeFileSync9(args.outputPath, html);
           return JSON.stringify({ reportPath: args.outputPath });
         }
       }),
@@ -14884,7 +15044,7 @@ var SkillCreatorPlugin = async (ctx) => {
             existing.stop();
             activeServers.delete(args.workspace);
           }
-          const templatePath = join9(TEMPLATES_DIR, "viewer.html");
+          const templatePath = join10(TEMPLATES_DIR, "viewer.html");
           const { server, url: url2, feedbackPath, stop } = await serveReview({
             workspace: args.workspace,
             port: args.port ?? 3117,
@@ -14946,7 +15106,7 @@ var SkillCreatorPlugin = async (ctx) => {
         },
         async execute(args) {
           const prep = prepareReviewLaunch(args);
-          const templatePath = join9(TEMPLATES_DIR, "viewer.html");
+          const templatePath = join10(TEMPLATES_DIR, "viewer.html");
           const outPath = exportStaticReview({
             workspace: args.workspace,
             outputPath: args.outputPath,
@@ -14974,6 +15134,11 @@ var SkillCreatorPlugin = async (ctx) => {
 };
 var skill_creator_default = SkillCreatorPlugin;
 export {
+  maybeAutoRefreshPluginCache,
+  isInsidePath,
+  getAutoUpdatePaths,
   skill_creator_default as default,
-  SkillCreatorPlugin
+  SkillCreatorPlugin,
+  AUTO_UPDATE_TTL_MS,
+  AUTO_UPDATE_STATUS_FILE
 };
