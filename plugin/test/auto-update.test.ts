@@ -5,6 +5,7 @@ import { tmpdir } from "os"
 import { join, win32 } from "path"
 
 import {
+  AUTO_UPDATE_STATUS_FILE,
   AUTO_UPDATE_TTL_MS,
   SkillCreatorPlugin,
   getAutoUpdatePaths,
@@ -71,6 +72,16 @@ test("auto update clears stale latest cache and records check timestamp", async 
     expect(status.lastCheckedAt).toBe(1_000_000)
     expect(status.latestVersion).toBe("0.2.14")
     expect(status.currentVersion).toBe("0.2.13")
+  })
+})
+
+test("auto update exports the status file name used by getAutoUpdatePaths", async () => {
+  await withHome(async () => {
+    const paths = getAutoUpdatePaths()
+
+    expect(paths.statusPath).toBe(
+      join(process.env.XDG_CONFIG_HOME!, "opencode", AUTO_UPDATE_STATUS_FILE),
+    )
   })
 })
 

@@ -214,3 +214,15 @@ test("ensureBundledSkillInstalled reports user skill backup failures before cont
     )
   })
 })
+
+test("archiveLegacySkill disables legacy SKILL.md before moving the legacy directory", () => {
+  const source = readFileSync(join(import.meta.dir, "..", "lib", "skill-install.ts"), "utf-8")
+  const disableSkillIndex = source.indexOf(
+    'renameSync(backupSkillFile, join(args.legacySkillDir, "SKILL.md.backup"))',
+  )
+  const moveDirectoryIndex = source.indexOf("renameSync(args.legacySkillDir, backupDir)")
+
+  expect(disableSkillIndex).toBeGreaterThanOrEqual(0)
+  expect(moveDirectoryIndex).toBeGreaterThanOrEqual(0)
+  expect(disableSkillIndex).toBeLessThan(moveDirectoryIndex)
+})

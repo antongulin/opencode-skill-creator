@@ -14581,11 +14581,11 @@ function archiveLegacySkill(args) {
   if (!existsSync7(legacyVersionFile))
     return;
   const backupDir = uniqueBackupDir(args.skillsRoot, args.backupTimestamp());
-  renameSync2(args.legacySkillDir, backupDir);
-  const backupSkillFile = join9(backupDir, "SKILL.md");
+  const backupSkillFile = join9(args.legacySkillDir, "SKILL.md");
   if (existsSync7(backupSkillFile)) {
-    renameSync2(backupSkillFile, join9(backupDir, "SKILL.md.backup"));
+    renameSync2(backupSkillFile, join9(args.legacySkillDir, "SKILL.md.backup"));
   }
+  renameSync2(args.legacySkillDir, backupDir);
 }
 function ensureBundledSkillInstalled(options) {
   const skillsRoot = join9(options.configDir, "opencode", "skills");
@@ -15139,5 +15139,6 @@ export {
   getAutoUpdatePaths,
   skill_creator_default as default,
   SkillCreatorPlugin,
-  AUTO_UPDATE_TTL_MS
+  AUTO_UPDATE_TTL_MS,
+  AUTO_UPDATE_STATUS_FILE
 };

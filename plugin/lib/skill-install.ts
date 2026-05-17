@@ -65,12 +65,12 @@ function archiveLegacySkill(args: {
 
   const backupDir = uniqueBackupDir(args.skillsRoot, args.backupTimestamp())
 
-  renameSync(args.legacySkillDir, backupDir)
-
-  const backupSkillFile = join(backupDir, "SKILL.md")
+  const backupSkillFile = join(args.legacySkillDir, "SKILL.md")
   if (existsSync(backupSkillFile)) {
-    renameSync(backupSkillFile, join(backupDir, "SKILL.md.backup"))
+    renameSync(backupSkillFile, join(args.legacySkillDir, "SKILL.md.backup"))
   }
+
+  renameSync(args.legacySkillDir, backupDir)
 }
 
 export function ensureBundledSkillInstalled(
