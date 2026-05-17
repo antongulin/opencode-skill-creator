@@ -12336,7 +12336,7 @@ function tool(input) {
 }
 tool.schema = exports_external;
 // skill-creator.ts
-import { join as join10, dirname as dirname3, relative as relative2 } from "path";
+import { join as join10, dirname as dirname3, isAbsolute, relative as relative2, sep } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync7, rmSync as rmSync3, writeFileSync as writeFileSync8 } from "fs";
@@ -14728,9 +14728,13 @@ function writeAutoUpdateStatus(path, status) {
 `, "utf-8");
   } catch {}
 }
-function isInsidePath(parent, child) {
-  const rel = relative2(parent, child);
-  return rel === "" || !rel.startsWith("..") && !rel.startsWith("/");
+function isInsidePath(parent, child, pathModule = {
+  isAbsolute,
+  relative: relative2,
+  sep
+}) {
+  const rel = pathModule.relative(parent, child);
+  return rel === "" || !rel.startsWith("..") && !pathModule.isAbsolute(rel) && !rel.startsWith("/") && !rel.startsWith("\\") && !rel.includes(`..${pathModule.sep}`);
 }
 function scheduleCacheClear(path) {
   process.once("exit", () => {
@@ -15123,6 +15127,7 @@ var SkillCreatorPlugin = async (ctx) => {
 var skill_creator_default = SkillCreatorPlugin;
 export {
   maybeAutoRefreshPluginCache,
+  isInsidePath,
   getAutoUpdatePaths,
   skill_creator_default as default,
   SkillCreatorPlugin,

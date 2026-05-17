@@ -2,12 +2,13 @@ import { expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "fs"
 import { mkdir, rm } from "fs/promises"
 import { tmpdir } from "os"
-import { join } from "path"
+import { join, win32 } from "path"
 
 import {
   AUTO_UPDATE_TTL_MS,
   SkillCreatorPlugin,
   getAutoUpdatePaths,
+  isInsidePath,
   maybeAutoRefreshPluginCache,
 } from "../skill-creator"
 
@@ -91,6 +92,19 @@ test("auto update schedules stale cache clearing when plugin runs from that cach
     expect(scheduledPaths).toEqual([paths.packageCacheRoot])
     expect(existsSync(paths.packageCacheRoot)).toBe(true)
   })
+})
+
+test("path containment check rejects Windows absolute paths outside the cache root", () => {
+  expect(
+    isInsidePath("C:\\Users\\me\\cache", "D:\\Users\\me\\other", win32),
+  ).toBe(false)
+  expect(
+    isInsidePath(
+      "C:\\Users\\me\\cache",
+      "C:\\Users\\me\\cache\\node_modules\\opencode-skill-creator",
+      win32,
+    ),
+  ).toBe(true)
 })
 
 test("auto update skips registry check when previous check is younger than ttl", async () => {

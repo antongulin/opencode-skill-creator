@@ -14,7 +14,7 @@
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin"
-import { join, dirname, relative } from "path"
+import { join, dirname, isAbsolute, relative, sep } from "path"
 import { homedir } from "os"
 import { fileURLToPath } from "url"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
@@ -218,9 +218,24 @@ function writeAutoUpdateStatus(path: string, status: AutoUpdateStatus) {
   }
 }
 
-function isInsidePath(parent: string, child: string) {
-  const rel = relative(parent, child)
-  return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"))
+export function isInsidePath(
+  parent: string,
+  child: string,
+  pathModule: Pick<typeof import("path"), "isAbsolute" | "relative" | "sep"> = {
+    isAbsolute,
+    relative,
+    sep,
+  },
+) {
+  const rel = pathModule.relative(parent, child)
+  return (
+    rel === "" ||
+    (!rel.startsWith("..") &&
+      !pathModule.isAbsolute(rel) &&
+      !rel.startsWith("/") &&
+      !rel.startsWith("\\") &&
+      !rel.includes(`..${pathModule.sep}`))
+  )
 }
 
 function scheduleCacheClear(path: string) {
