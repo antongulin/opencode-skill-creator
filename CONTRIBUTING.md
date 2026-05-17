@@ -21,7 +21,7 @@ Thanks for your interest in contributing! This project is based on [Anthropic's 
 
 The project has two components:
 
-- **Skill** (`skill-creator/`): Markdown instructions (SKILL.md + agents + templates). Edit these directly.
+- **Skill** (`opencode-skill-creator/`): Markdown instructions (SKILL.md + agents + templates). Edit these directly.
 - **Plugin** (`plugin/`): TypeScript module. Uses Bun as the runtime.
 
 To test the plugin locally:
