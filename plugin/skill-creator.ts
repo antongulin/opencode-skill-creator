@@ -14,7 +14,7 @@
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin"
-import { join, dirname } from "path"
+import { join, dirname, relative } from "path"
 import { homedir } from "os"
 import { fileURLToPath } from "url"
 import {
@@ -61,6 +61,10 @@ const TEMPLATES_DIR = join(PLUGIN_DIR, "templates")
 const BUNDLED_SKILL_DIR = join(PLUGIN_DIR, "skill")
 const PACKAGE_JSON_PATH = join(PLUGIN_DIR, "package.json")
 const INSTALL_VERSION_FILE = ".opencode-skill-creator-version"
+export const AUTO_UPDATE_TTL_MS = 24 * 60 * 60 * 1000
+const AUTO_UPDATE_STATUS_FILE = "opencode-skill-creator-update-check.json"
+const NPM_REGISTRY_URL = "https://registry.npmjs.org/opencode-skill-creator/latest"
+const AUTO_UPDATE_TIMEOUT_MS = 2500
 const GOLD_STANDARDS_PATH = join(
   homedir(),
   ".config",
@@ -215,6 +219,174 @@ function ensureSkillInstalled(): void {
   }
 }
 
+type AutoUpdateResult = {
+  checked: boolean
+  cleared: boolean
+  reason:
+    | "disabled"
+    | "recently-checked"
+    | "newer-version"
+    | "scheduled-clear"
+    | "up-to-date"
+    | "missing-cache"
+    | "unknown-version"
+    | "error"
+}
+
+type AutoUpdateOptions = {
+  currentVersion?: string
+  currentPluginDir?: string
+  now?: number
+  fetchImpl?: typeof fetch
+  scheduleClearImpl?: (path: string) => void
+}
+
+type AutoUpdateStatus = {
+  lastCheckedAt?: number
+  currentVersion?: string
+  latestVersion?: string
+}
+
+export function getAutoUpdatePaths() {
+  const cacheDir = process.env.XDG_CACHE_HOME || join(homedir(), ".cache")
+  const configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
+  const packageCacheRoot = join(
+    cacheDir,
+    "opencode",
+    "packages",
+    "opencode-skill-creator@latest",
+  )
+
+  return {
+    packageCacheRoot,
+    cachedPackageDir: join(
+      packageCacheRoot,
+      "node_modules",
+      "opencode-skill-creator",
+    ),
+    cachedPackageJson: join(
+      packageCacheRoot,
+      "node_modules",
+      "opencode-skill-creator",
+      "package.json",
+    ),
+    statusPath: join(configDir, "opencode", AUTO_UPDATE_STATUS_FILE),
+  }
+}
+
+function compareVersions(a: string, b: string) {
+  const parse = (value: string) =>
+    value.split(".").map((part) => Number.parseInt(part, 10) || 0)
+  const left = parse(a)
+  const right = parse(b)
+  const length = Math.max(left.length, right.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0)
+    if (diff !== 0) return diff > 0 ? 1 : -1
+  }
+
+  return 0
+}
+
+function readAutoUpdateStatus(path: string): AutoUpdateStatus {
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as AutoUpdateStatus
+  } catch {
+    return {}
+  }
+}
+
+function writeAutoUpdateStatus(path: string, status: AutoUpdateStatus) {
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, `${JSON.stringify(status, null, 2)}\n`, "utf-8")
+  } catch {
+    // Best-effort status tracking only.
+  }
+}
+
+function isInsidePath(parent: string, child: string) {
+  const rel = relative(parent, child)
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"))
+}
+
+function scheduleCacheClear(path: string) {
+  process.once("exit", () => {
+    try {
+      rmSync(path, { recursive: true, force: true })
+    } catch {
+      // Best-effort cache cleanup only.
+    }
+  })
+}
+
+export async function maybeAutoRefreshPluginCache(
+  options: AutoUpdateOptions = {},
+): Promise<AutoUpdateResult> {
+  try {
+    if (process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE === "0") {
+      return { checked: false, cleared: false, reason: "disabled" }
+    }
+
+    const currentVersion = options.currentVersion ?? PACKAGE_VERSION
+    if (currentVersion === "0.0.0") {
+      return { checked: false, cleared: false, reason: "unknown-version" }
+    }
+
+    const paths = getAutoUpdatePaths()
+    const now = options.now ?? Date.now()
+    const status = readAutoUpdateStatus(paths.statusPath)
+    if (
+      typeof status.lastCheckedAt === "number" &&
+      now - status.lastCheckedAt < AUTO_UPDATE_TTL_MS
+    ) {
+      return { checked: false, cleared: false, reason: "recently-checked" }
+    }
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), AUTO_UPDATE_TIMEOUT_MS)
+
+    try {
+      const response = await (options.fetchImpl ?? fetch)(NPM_REGISTRY_URL, {
+        signal: controller.signal,
+      })
+      if (!response.ok) return { checked: false, cleared: false, reason: "error" }
+
+      const metadata = (await response.json()) as { version?: string }
+      const latestVersion = metadata.version
+      if (!latestVersion) return { checked: false, cleared: false, reason: "error" }
+
+      writeAutoUpdateStatus(paths.statusPath, {
+        lastCheckedAt: now,
+        currentVersion,
+        latestVersion,
+      })
+
+      if (compareVersions(latestVersion, currentVersion) <= 0) {
+        return { checked: true, cleared: false, reason: "up-to-date" }
+      }
+
+      if (!existsSync(paths.cachedPackageJson)) {
+        return { checked: true, cleared: false, reason: "missing-cache" }
+      }
+
+      const currentPluginDir = options.currentPluginDir ?? PLUGIN_DIR
+      if (isInsidePath(paths.packageCacheRoot, currentPluginDir)) {
+        ;(options.scheduleClearImpl ?? scheduleCacheClear)(paths.packageCacheRoot)
+        return { checked: true, cleared: false, reason: "scheduled-clear" }
+      }
+
+      rmSync(paths.packageCacheRoot, { recursive: true, force: true })
+      return { checked: true, cleared: true, reason: "newer-version" }
+    } finally {
+      clearTimeout(timeout)
+    }
+  } catch {
+    return { checked: false, cleared: false, reason: "error" }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Track running review servers so they can be stopped
 // ---------------------------------------------------------------------------
@@ -228,6 +400,7 @@ const activeServers: Map<string, { stop: () => void; url: string }> = new Map()
 export const SkillCreatorPlugin: Plugin = async (ctx) => {
   // Auto-install bundled skill files to ~/.config/opencode/skills/skill-creator/
   ensureSkillInstalled()
+  void maybeAutoRefreshPluginCache()
 
   return {
     tool: {

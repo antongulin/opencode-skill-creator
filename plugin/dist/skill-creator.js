@@ -12336,7 +12336,7 @@ function tool(input) {
 }
 tool.schema = exports_external;
 // skill-creator.ts
-import { join as join9, dirname as dirname3 } from "path";
+import { join as join9, dirname as dirname3, relative as relative2 } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 import {
@@ -14550,6 +14550,10 @@ var TEMPLATES_DIR = join9(PLUGIN_DIR, "templates");
 var BUNDLED_SKILL_DIR = join9(PLUGIN_DIR, "skill");
 var PACKAGE_JSON_PATH = join9(PLUGIN_DIR, "package.json");
 var INSTALL_VERSION_FILE = ".opencode-skill-creator-version";
+var AUTO_UPDATE_TTL_MS = 24 * 60 * 60 * 1000;
+var AUTO_UPDATE_STATUS_FILE = "opencode-skill-creator-update-check.json";
+var NPM_REGISTRY_URL = "https://registry.npmjs.org/opencode-skill-creator/latest";
+var AUTO_UPDATE_TIMEOUT_MS = 2500;
 var GOLD_STANDARDS_PATH = join9(homedir(), ".config", "opencode", "gold-standards.json");
 var PACKAGE_VERSION = (() => {
   try {
@@ -14648,9 +14652,110 @@ function ensureSkillInstalled() {
     }
   }
 }
+function getAutoUpdatePaths() {
+  const cacheDir = process.env.XDG_CACHE_HOME || join9(homedir(), ".cache");
+  const configDir = process.env.XDG_CONFIG_HOME || join9(homedir(), ".config");
+  const packageCacheRoot = join9(cacheDir, "opencode", "packages", "opencode-skill-creator@latest");
+  return {
+    packageCacheRoot,
+    cachedPackageDir: join9(packageCacheRoot, "node_modules", "opencode-skill-creator"),
+    cachedPackageJson: join9(packageCacheRoot, "node_modules", "opencode-skill-creator", "package.json"),
+    statusPath: join9(configDir, "opencode", AUTO_UPDATE_STATUS_FILE)
+  };
+}
+function compareVersions(a, b) {
+  const parse6 = (value) => value.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const left = parse6(a);
+  const right = parse6(b);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0;index < length; index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0);
+    if (diff !== 0)
+      return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+function readAutoUpdateStatus(path) {
+  try {
+    return JSON.parse(readFileSync6(path, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+function writeAutoUpdateStatus(path, status) {
+  try {
+    mkdirSync5(dirname3(path), { recursive: true });
+    writeFileSync7(path, `${JSON.stringify(status, null, 2)}
+`, "utf-8");
+  } catch {}
+}
+function isInsidePath(parent, child) {
+  const rel = relative2(parent, child);
+  return rel === "" || !rel.startsWith("..") && !rel.startsWith("/");
+}
+function scheduleCacheClear(path) {
+  process.once("exit", () => {
+    try {
+      rmSync2(path, { recursive: true, force: true });
+    } catch {}
+  });
+}
+async function maybeAutoRefreshPluginCache(options = {}) {
+  try {
+    if (process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE === "0") {
+      return { checked: false, cleared: false, reason: "disabled" };
+    }
+    const currentVersion = options.currentVersion ?? PACKAGE_VERSION;
+    if (currentVersion === "0.0.0") {
+      return { checked: false, cleared: false, reason: "unknown-version" };
+    }
+    const paths = getAutoUpdatePaths();
+    const now = options.now ?? Date.now();
+    const status = readAutoUpdateStatus(paths.statusPath);
+    if (typeof status.lastCheckedAt === "number" && now - status.lastCheckedAt < AUTO_UPDATE_TTL_MS) {
+      return { checked: false, cleared: false, reason: "recently-checked" };
+    }
+    const controller = new AbortController;
+    const timeout = setTimeout(() => controller.abort(), AUTO_UPDATE_TIMEOUT_MS);
+    try {
+      const response = await (options.fetchImpl ?? fetch)(NPM_REGISTRY_URL, {
+        signal: controller.signal
+      });
+      if (!response.ok)
+        return { checked: false, cleared: false, reason: "error" };
+      const metadata = await response.json();
+      const latestVersion = metadata.version;
+      if (!latestVersion)
+        return { checked: false, cleared: false, reason: "error" };
+      writeAutoUpdateStatus(paths.statusPath, {
+        lastCheckedAt: now,
+        currentVersion,
+        latestVersion
+      });
+      if (compareVersions(latestVersion, currentVersion) <= 0) {
+        return { checked: true, cleared: false, reason: "up-to-date" };
+      }
+      if (!existsSync7(paths.cachedPackageJson)) {
+        return { checked: true, cleared: false, reason: "missing-cache" };
+      }
+      const currentPluginDir = options.currentPluginDir ?? PLUGIN_DIR;
+      if (isInsidePath(paths.packageCacheRoot, currentPluginDir)) {
+        (options.scheduleClearImpl ?? scheduleCacheClear)(paths.packageCacheRoot);
+        return { checked: true, cleared: false, reason: "scheduled-clear" };
+      }
+      rmSync2(paths.packageCacheRoot, { recursive: true, force: true });
+      return { checked: true, cleared: true, reason: "newer-version" };
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return { checked: false, cleared: false, reason: "error" };
+  }
+}
 var activeServers = new Map;
 var SkillCreatorPlugin = async (ctx) => {
   ensureSkillInstalled();
+  maybeAutoRefreshPluginCache();
   return {
     tool: {
       skill_validate: tool({
@@ -14974,6 +15079,9 @@ var SkillCreatorPlugin = async (ctx) => {
 };
 var skill_creator_default = SkillCreatorPlugin;
 export {
+  maybeAutoRefreshPluginCache,
+  getAutoUpdatePaths,
   skill_creator_default as default,
-  SkillCreatorPlugin
+  SkillCreatorPlugin,
+  AUTO_UPDATE_TTL_MS
 };
