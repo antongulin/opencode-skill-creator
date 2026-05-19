@@ -91,7 +91,7 @@ test("compiled entrypoint imports as a plugin function", async () => {
 })
 
 test("compiled entrypoint only exposes plugin functions for legacy OpenCode loaders", async () => {
-  const mod = await import(`${distEntryPath}?legacy-loader`)
+  const mod = await import(distEntryPath)
 
   assert.deepEqual(Object.keys(mod), ["default"])
   assert.equal(typeof mod.default, "function")
