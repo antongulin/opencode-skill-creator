@@ -5,11 +5,12 @@
  *
  * Reads a workspace directory, discovers runs (directories with outputs/),
  * embeds all output data into a self-contained HTML page, and serves it via
- * Bun.serve(). Feedback auto-saves to feedback.json in the workspace.
+ * a local HTTP server. Feedback auto-saves to feedback.json in the workspace.
  *
- * No external dependencies beyond Bun built-ins are required.
+ * No external runtime dependencies are required.
  */
 
+import { spawn } from "node:child_process"
 import {
   existsSync,
   mkdirSync,
@@ -18,6 +19,8 @@ import {
   statSync,
   writeFileSync,
 } from "fs"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import type { AddressInfo } from "node:net"
 import { basename, extname, join, relative } from "path"
 
 // ---------------------------------------------------------------------------
@@ -382,14 +385,40 @@ export function generateReviewHtml(opts: {
 // Port-killing utility
 // ---------------------------------------------------------------------------
 
-async function killPort(port: number): Promise<void> {
-  try {
-    const proc = Bun.spawn(["lsof", "-ti", `:${port}`], {
+function readStream(stream: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = ""
+    stream.setEncoding("utf-8")
+    stream.on("data", (chunk) => {
+      body += chunk
+    })
+    stream.on("end", () => resolve(body))
+    stream.on("error", reject)
+  })
+}
+
+function runCommand(command: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    const proc = spawn(command, args, {
       stdout: "pipe",
       stderr: "ignore",
     })
-    const text = await new Response(proc.stdout).text()
-    await proc.exited
+    let text = ""
+
+    proc.stdout?.setEncoding("utf-8")
+    proc.stdout?.on("data", (chunk) => {
+      text += chunk
+    })
+    proc.on("error", () => resolve(""))
+    proc.on("close", () => resolve(text))
+  })
+}
+
+async function killPort(port: number): Promise<void> {
+  if (port <= 0) return
+
+  try {
+    const text = await runCommand("lsof", ["-ti", `:${port}`])
 
     for (const pidStr of text.trim().split("\n")) {
       const pid = parseInt(pidStr.trim(), 10)
@@ -407,6 +436,140 @@ async function killPort(port: number): Promise<void> {
   } catch {
     /* lsof not available or no process found */
   }
+}
+
+interface ReviewRequestContext {
+  workspace: string
+  skillName: string
+  feedbackPath: string
+  previous: Record<string, { feedback: string; outputs: EmbeddedFile[] }> | null
+  benchmarkPath?: string | null
+  templatePath: string
+}
+
+interface ReviewResponse {
+  status: number
+  headers: Record<string, string>
+  body: string
+}
+
+function jsonResponse(body: unknown, status = 200): ReviewResponse {
+  return {
+    status,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }
+}
+
+function textResponse(body: string, status = 200, contentType = "text/plain"): ReviewResponse {
+  return {
+    status,
+    headers: { "Content-Type": contentType },
+    body,
+  }
+}
+
+async function handleReviewRequest(
+  method: string,
+  requestUrl: string,
+  requestBody: string,
+  context: ReviewRequestContext,
+): Promise<ReviewResponse> {
+  const url = new URL(requestUrl, "http://localhost")
+
+  if (method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+    const runs = findRuns(context.workspace)
+
+    let benchmark: Record<string, unknown> | null = null
+    if (context.benchmarkPath && existsSync(context.benchmarkPath)) {
+      try {
+        benchmark = JSON.parse(readFileSync(context.benchmarkPath, "utf-8"))
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const html = generateReviewHtml({
+      runs,
+      skillName: context.skillName,
+      previous: context.previous,
+      benchmark,
+      templatePath: context.templatePath,
+    })
+
+    return textResponse(html, 200, "text/html; charset=utf-8")
+  }
+
+  if (method === "GET" && url.pathname === "/api/feedback") {
+    let data = "{}"
+    if (existsSync(context.feedbackPath)) {
+      try {
+        data = readFileSync(context.feedbackPath, "utf-8")
+      } catch {
+        /* ignore */
+      }
+    }
+    return textResponse(data, 200, "application/json")
+  }
+
+  if (method === "POST" && url.pathname === "/api/feedback") {
+    let body: unknown
+    try {
+      body = JSON.parse(requestBody)
+    } catch (e) {
+      return jsonResponse({ error: String(e) }, 400)
+    }
+
+    if (!isValidFeedbackPayload(body)) {
+      return jsonResponse({ error: "Expected JSON object with a valid 'reviews' array" }, 400)
+    }
+
+    try {
+      writeFileSync(context.feedbackPath, JSON.stringify(body, null, 2) + "\n")
+    } catch (e) {
+      return jsonResponse({ error: String(e) }, 500)
+    }
+
+    return jsonResponse({ ok: true })
+  }
+
+  return textResponse("Not Found", 404)
+}
+
+async function handleNodeRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  context: ReviewRequestContext,
+): Promise<void> {
+  try {
+    const body = req.method === "POST" ? await readStream(req) : ""
+    const result = await handleReviewRequest(
+      req.method ?? "GET",
+      req.url ?? "/",
+      body,
+      context,
+    )
+    res.writeHead(result.status, result.headers)
+    res.end(result.body)
+  } catch (e) {
+    res.writeHead(500, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ error: String(e) }))
+  }
+}
+
+function listen(server: Server, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("error", onError)
+      reject(error)
+    }
+
+    server.once("error", onError)
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", onError)
+      resolve()
+    })
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -427,10 +590,10 @@ export interface ServeReviewOptions {
  * Start the eval review HTTP server.
  *
  * Regenerates HTML on each page load so refreshing picks up new outputs
- * without restarting. Returns the Bun server instance.
+ * without restarting. Returns the server instance.
  */
 export async function serveReview(opts: ServeReviewOptions): Promise<{
-  server: ReturnType<typeof Bun.serve>
+  server: Server
   url: string
   feedbackPath: string
   stop: () => void
@@ -461,100 +624,31 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
   // Kill any existing process on the target port
   await killPort(port)
 
-  let actualPort = port
-
-  const server = Bun.serve({
-    port,
-    hostname: "127.0.0.1",
-    async fetch(req) {
-      const url = new URL(req.url)
-
-      if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-        // Regenerate HTML on each request (re-scans workspace for new outputs)
-        const runs = findRuns(workspace)
-
-        let benchmark: Record<string, unknown> | null = null
-        if (benchmarkPath && existsSync(benchmarkPath)) {
-          try {
-            benchmark = JSON.parse(readFileSync(benchmarkPath, "utf-8"))
-          } catch {
-            /* ignore */
-          }
-        }
-
-        const html = generateReviewHtml({
-          runs,
-          skillName,
-          previous,
-          benchmark,
-          templatePath,
-        })
-
-        return new Response(html, {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        })
-      }
-
-      if (req.method === "GET" && url.pathname === "/api/feedback") {
-        let data = "{}"
-        if (existsSync(feedbackPath)) {
-          try {
-            data = readFileSync(feedbackPath, "utf-8")
-          } catch {
-            /* ignore */
-          }
-        }
-        return new Response(data, {
-          headers: { "Content-Type": "application/json" },
-        })
-      }
-
-      if (req.method === "POST" && url.pathname === "/api/feedback") {
-        let body: unknown
-        try {
-          body = (await req.json()) as unknown
-        } catch (e) {
-          return new Response(JSON.stringify({ error: String(e) }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          })
-        }
-
-        if (!isValidFeedbackPayload(body)) {
-          return new Response(
-            JSON.stringify({ error: "Expected JSON object with a valid 'reviews' array" }),
-            {
-              status: 400,
-              headers: { "Content-Type": "application/json" },
-            },
-          )
-        }
-
-        try {
-          writeFileSync(feedbackPath, JSON.stringify(body, null, 2) + "\n")
-        } catch (e) {
-          return new Response(JSON.stringify({ error: String(e) }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          })
-        }
-
-        return new Response(JSON.stringify({ ok: true }), {
-          headers: { "Content-Type": "application/json" },
-        })
-      }
-
-      return new Response("Not Found", { status: 404 })
-    },
+  const context: ReviewRequestContext = {
+    workspace,
+    skillName,
+    feedbackPath,
+    previous,
+    benchmarkPath,
+    templatePath,
+  }
+  const server = createServer((req, res) => {
+    void handleNodeRequest(req, res, context)
   })
+  await listen(server, port)
 
-  actualPort = server.port
+  const address = server.address() as AddressInfo
+  const actualPort = address.port
   const serverUrl = `http://localhost:${actualPort}`
 
   if (openBrowser) {
     // Open browser (best-effort, non-blocking)
     try {
-      Bun.spawn(["open", serverUrl], { stdout: "ignore", stderr: "ignore" })
+      const openProc = spawn("open", [serverUrl], {
+        detached: true,
+        stdio: "ignore",
+      })
+      openProc.unref()
     } catch {
       /* ignore — headless environment */
     }
@@ -564,7 +658,7 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
     server,
     url: serverUrl,
     feedbackPath,
-    stop: () => server.stop(),
+    stop: () => server.close(),
   }
 }
 

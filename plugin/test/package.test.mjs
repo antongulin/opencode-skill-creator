@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -95,6 +96,83 @@ test("compiled entrypoint only exposes plugin functions for legacy OpenCode load
 
   assert.deepEqual(Object.keys(mod), ["default"])
   assert.equal(typeof mod.default, "function")
+})
+
+test("compiled review server runs in Node without a Bun runtime global", async () => {
+  assert.equal(globalThis.Bun, undefined)
+
+  const tempHome = mkdtempSync(join(tmpdir(), "osc-review-server-"))
+  const workspace = join(tempHome, "workspace")
+  const fakeBin = join(tempHome, "bin")
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+  const previousPath = process.env.PATH
+
+  try {
+    const outputsDir = join(workspace, "eval-0", "with_skill", "outputs")
+    mkdirSync(outputsDir, { recursive: true })
+    mkdirSync(fakeBin, { recursive: true })
+    writeFileSync(
+      join(workspace, "eval-0", "eval_metadata.json"),
+      `${JSON.stringify({ eval_id: 0, prompt: "Review this output" })}\n`,
+    )
+    writeFileSync(join(outputsDir, "result.txt"), "ok\n")
+    writeFileSync(join(fakeBin, "open"), "#!/bin/sh\nexit 0\n")
+    chmodSync(join(fakeBin, "open"), 0o755)
+
+    process.env.XDG_CONFIG_HOME = tempHome
+    process.env.PATH = previousPath ? `${fakeBin}:${previousPath}` : fakeBin
+
+    const mod = await import(`${distEntryPath}?review-node=${Date.now()}`)
+    const hooks = await mod.default({})
+    const result = JSON.parse(
+      await hooks.tool.skill_serve_review.execute({
+        workspace,
+        port: 0,
+        skillName: "test-skill",
+        allowPartial: true,
+      }),
+    )
+
+    try {
+      const response = await fetch(result.url)
+      assert.equal(response.status, 200)
+      const html = await response.text()
+      assert.match(html, /test-skill/)
+      assert.match(html, /ok/)
+
+      const feedback = {
+        status: "complete",
+        reviews: [
+          {
+            run_id: "eval-0-with_skill",
+            feedback: "works",
+            timestamp: "2026-05-24T00:00:00.000Z",
+          },
+        ],
+      }
+      const feedbackResponse = await fetch(`${result.url}/api/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(feedback),
+      })
+      assert.equal(feedbackResponse.status, 200)
+      assert.equal(readFileSync(result.feedbackPath, "utf-8"), `${JSON.stringify(feedback, null, 2)}\n`)
+    } finally {
+      await hooks.tool.skill_stop_review.execute({ workspace })
+    }
+  } finally {
+    if (previousXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+    }
+    if (previousPath === undefined) {
+      delete process.env.PATH
+    } else {
+      process.env.PATH = previousPath
+    }
+    rmSync(tempHome, { recursive: true, force: true })
+  }
 })
 
 test("compiled plugin startup installs renamed skill and archives plugin-owned legacy skill", async () => {

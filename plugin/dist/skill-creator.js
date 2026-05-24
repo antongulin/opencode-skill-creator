@@ -13928,6 +13928,7 @@ function generateMarkdown(benchmark) {
 }
 
 // lib/review-server.ts
+import { spawn } from "child_process";
 import {
   existsSync as existsSync4,
   mkdirSync as mkdirSync3,
@@ -13936,6 +13937,7 @@ import {
   statSync as statSync2,
   writeFileSync as writeFileSync5
 } from "fs";
+import { createServer } from "http";
 import { basename as basename2, extname, join as join6, relative } from "path";
 var METADATA_FILES = new Set(["transcript.md", "user_notes.md", "metrics.json"]);
 var TEXT_EXTENSIONS = new Set([
@@ -14205,14 +14207,37 @@ function generateReviewHtml(opts) {
   const dataJson = JSON.stringify(embedded);
   return template.replace("/*__EMBEDDED_DATA__*/", `const EMBEDDED_DATA = ${dataJson};`);
 }
-async function killPort(port) {
-  try {
-    const proc = Bun.spawn(["lsof", "-ti", `:${port}`], {
+function readStream(stream) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    stream.setEncoding("utf-8");
+    stream.on("data", (chunk) => {
+      body += chunk;
+    });
+    stream.on("end", () => resolve(body));
+    stream.on("error", reject);
+  });
+}
+function runCommand(command, args) {
+  return new Promise((resolve) => {
+    const proc = spawn(command, args, {
       stdout: "pipe",
       stderr: "ignore"
     });
-    const text = await new Response(proc.stdout).text();
-    await proc.exited;
+    let text = "";
+    proc.stdout?.setEncoding("utf-8");
+    proc.stdout?.on("data", (chunk) => {
+      text += chunk;
+    });
+    proc.on("error", () => resolve(""));
+    proc.on("close", () => resolve(text));
+  });
+}
+async function killPort(port) {
+  if (port <= 0)
+    return;
+  try {
+    const text = await runCommand("lsof", ["-ti", `:${port}`]);
     for (const pidStr of text.trim().split(`
 `)) {
       const pid = parseInt(pidStr.trim(), 10);
@@ -14226,6 +14251,92 @@ async function killPort(port) {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   } catch {}
+}
+function jsonResponse(body, status = 200) {
+  return {
+    status,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  };
+}
+function textResponse(body, status = 200, contentType = "text/plain") {
+  return {
+    status,
+    headers: { "Content-Type": contentType },
+    body
+  };
+}
+async function handleReviewRequest(method, requestUrl, requestBody, context) {
+  const url2 = new URL(requestUrl, "http://localhost");
+  if (method === "GET" && (url2.pathname === "/" || url2.pathname === "/index.html")) {
+    const runs = findRuns(context.workspace);
+    let benchmark = null;
+    if (context.benchmarkPath && existsSync4(context.benchmarkPath)) {
+      try {
+        benchmark = JSON.parse(readFileSync4(context.benchmarkPath, "utf-8"));
+      } catch {}
+    }
+    const html = generateReviewHtml({
+      runs,
+      skillName: context.skillName,
+      previous: context.previous,
+      benchmark,
+      templatePath: context.templatePath
+    });
+    return textResponse(html, 200, "text/html; charset=utf-8");
+  }
+  if (method === "GET" && url2.pathname === "/api/feedback") {
+    let data = "{}";
+    if (existsSync4(context.feedbackPath)) {
+      try {
+        data = readFileSync4(context.feedbackPath, "utf-8");
+      } catch {}
+    }
+    return textResponse(data, 200, "application/json");
+  }
+  if (method === "POST" && url2.pathname === "/api/feedback") {
+    let body;
+    try {
+      body = JSON.parse(requestBody);
+    } catch (e) {
+      return jsonResponse({ error: String(e) }, 400);
+    }
+    if (!isValidFeedbackPayload(body)) {
+      return jsonResponse({ error: "Expected JSON object with a valid 'reviews' array" }, 400);
+    }
+    try {
+      writeFileSync5(context.feedbackPath, JSON.stringify(body, null, 2) + `
+`);
+    } catch (e) {
+      return jsonResponse({ error: String(e) }, 500);
+    }
+    return jsonResponse({ ok: true });
+  }
+  return textResponse("Not Found", 404);
+}
+async function handleNodeRequest(req, res, context) {
+  try {
+    const body = req.method === "POST" ? await readStream(req) : "";
+    const result = await handleReviewRequest(req.method ?? "GET", req.url ?? "/", body, context);
+    res.writeHead(result.status, result.headers);
+    res.end(result.body);
+  } catch (e) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: String(e) }));
+  }
+}
+function listen(server, port) {
+  return new Promise((resolve, reject) => {
+    const onError = (error45) => {
+      server.off("error", onError);
+      reject(error45);
+    };
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
 }
 async function serveReview(opts) {
   const {
@@ -14247,86 +14358,35 @@ async function serveReview(opts) {
     previous = loadPreviousIteration(previousWorkspace);
   }
   await killPort(port);
-  let actualPort = port;
-  const server = Bun.serve({
-    port,
-    hostname: "127.0.0.1",
-    async fetch(req) {
-      const url2 = new URL(req.url);
-      if (req.method === "GET" && (url2.pathname === "/" || url2.pathname === "/index.html")) {
-        const runs = findRuns(workspace);
-        let benchmark = null;
-        if (benchmarkPath && existsSync4(benchmarkPath)) {
-          try {
-            benchmark = JSON.parse(readFileSync4(benchmarkPath, "utf-8"));
-          } catch {}
-        }
-        const html = generateReviewHtml({
-          runs,
-          skillName,
-          previous,
-          benchmark,
-          templatePath
-        });
-        return new Response(html, {
-          headers: { "Content-Type": "text/html; charset=utf-8" }
-        });
-      }
-      if (req.method === "GET" && url2.pathname === "/api/feedback") {
-        let data = "{}";
-        if (existsSync4(feedbackPath)) {
-          try {
-            data = readFileSync4(feedbackPath, "utf-8");
-          } catch {}
-        }
-        return new Response(data, {
-          headers: { "Content-Type": "application/json" }
-        });
-      }
-      if (req.method === "POST" && url2.pathname === "/api/feedback") {
-        let body;
-        try {
-          body = await req.json();
-        } catch (e) {
-          return new Response(JSON.stringify({ error: String(e) }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" }
-          });
-        }
-        if (!isValidFeedbackPayload(body)) {
-          return new Response(JSON.stringify({ error: "Expected JSON object with a valid 'reviews' array" }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" }
-          });
-        }
-        try {
-          writeFileSync5(feedbackPath, JSON.stringify(body, null, 2) + `
-`);
-        } catch (e) {
-          return new Response(JSON.stringify({ error: String(e) }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" }
-          });
-        }
-        return new Response(JSON.stringify({ ok: true }), {
-          headers: { "Content-Type": "application/json" }
-        });
-      }
-      return new Response("Not Found", { status: 404 });
-    }
+  const context = {
+    workspace,
+    skillName,
+    feedbackPath,
+    previous,
+    benchmarkPath,
+    templatePath
+  };
+  const server = createServer((req, res) => {
+    handleNodeRequest(req, res, context);
   });
-  actualPort = server.port;
+  await listen(server, port);
+  const address = server.address();
+  const actualPort = address.port;
   const serverUrl = `http://localhost:${actualPort}`;
   if (openBrowser) {
     try {
-      Bun.spawn(["open", serverUrl], { stdout: "ignore", stderr: "ignore" });
+      const openProc = spawn("open", [serverUrl], {
+        detached: true,
+        stdio: "ignore"
+      });
+      openProc.unref();
     } catch {}
   }
   return {
     server,
     url: serverUrl,
     feedbackPath,
-    stop: () => server.stop()
+    stop: () => server.close()
   };
 }
 function exportStaticReview(opts) {
