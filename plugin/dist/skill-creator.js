@@ -13969,6 +13969,7 @@ var TEXT_EXTENSIONS = new Set([
   ".toml"
 ]);
 var IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"]);
+var MAX_FEEDBACK_BODY_BYTES = 1e6;
 var MIME_OVERRIDES = {
   ".svg": "image/svg+xml",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -14207,14 +14208,34 @@ function generateReviewHtml(opts) {
   const dataJson = JSON.stringify(embedded);
   return template.replace("/*__EMBEDDED_DATA__*/", `const EMBEDDED_DATA = ${dataJson};`);
 }
-function readStream(stream) {
+
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super("Payload too large");
+    this.name = "PayloadTooLargeError";
+  }
+}
+function readStream(stream, maxBytes) {
   return new Promise((resolve, reject) => {
     let body = "";
+    let bytes = 0;
+    let rejected = false;
     stream.setEncoding("utf-8");
     stream.on("data", (chunk) => {
+      if (rejected)
+        return;
+      bytes += Buffer.byteLength(chunk, "utf-8");
+      if (bytes > maxBytes) {
+        rejected = true;
+        reject(new PayloadTooLargeError);
+        return;
+      }
       body += chunk;
     });
-    stream.on("end", () => resolve(body));
+    stream.on("end", () => {
+      if (!rejected)
+        resolve(body);
+    });
     stream.on("error", reject);
   });
 }
@@ -14234,7 +14255,7 @@ function runCommand(command, args) {
   });
 }
 async function killPort(port) {
-  if (port <= 0)
+  if (!Number.isInteger(port) || port <= 0)
     return;
   try {
     const text = await runCommand("lsof", ["-ti", `:${port}`]);
@@ -14316,11 +14337,16 @@ async function handleReviewRequest(method, requestUrl, requestBody, context) {
 }
 async function handleNodeRequest(req, res, context) {
   try {
-    const body = req.method === "POST" ? await readStream(req) : "";
+    const body = req.method === "POST" ? await readStream(req, MAX_FEEDBACK_BODY_BYTES) : "";
     const result = await handleReviewRequest(req.method ?? "GET", req.url ?? "/", body, context);
     res.writeHead(result.status, result.headers);
     res.end(result.body);
   } catch (e) {
+    if (e instanceof PayloadTooLargeError) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: e.message }));
+      return;
+    }
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: String(e) }));
   }

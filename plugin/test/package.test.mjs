@@ -165,6 +165,20 @@ test("compiled review server runs in Node without a Bun runtime global", async (
       })
       assert.equal(feedbackResponse.status, 200)
       assert.equal(readFileSync(result.feedbackPath, "utf-8"), `${JSON.stringify(feedback, null, 2)}\n`)
+
+      const oversizedResponse = await fetch(`${result.url}/api/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reviews: [
+            {
+              run_id: "eval-0-with_skill",
+              feedback: "x".repeat(1_100_000),
+            },
+          ],
+        }),
+      })
+      assert.equal(oversizedResponse.status, 413)
     } finally {
       await hooks.tool.skill_stop_review.execute({ workspace })
     }

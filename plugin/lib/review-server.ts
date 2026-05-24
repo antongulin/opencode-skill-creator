@@ -41,6 +41,9 @@ const TEXT_EXTENSIONS = new Set([
 /** Extensions rendered as inline images. */
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"])
 
+/** Maximum accepted feedback request body size. */
+const MAX_FEEDBACK_BODY_BYTES = 1_000_000
+
 /** MIME type overrides for common types. */
 const MIME_OVERRIDES: Record<string, string> = {
   ".svg": "image/svg+xml",
@@ -386,14 +389,32 @@ export function generateReviewHtml(opts: {
 // Port-killing utility
 // ---------------------------------------------------------------------------
 
-function readStream(stream: IncomingMessage): Promise<string> {
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super("Payload too large")
+    this.name = "PayloadTooLargeError"
+  }
+}
+
+function readStream(stream: IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = ""
+    let bytes = 0
+    let rejected = false
     stream.setEncoding("utf-8")
     stream.on("data", (chunk) => {
+      if (rejected) return
+      bytes += Buffer.byteLength(chunk, "utf-8")
+      if (bytes > maxBytes) {
+        rejected = true
+        reject(new PayloadTooLargeError())
+        return
+      }
       body += chunk
     })
-    stream.on("end", () => resolve(body))
+    stream.on("end", () => {
+      if (!rejected) resolve(body)
+    })
     stream.on("error", reject)
   })
 }
@@ -416,7 +437,7 @@ function runCommand(command: string, args: string[]): Promise<string> {
 }
 
 async function killPort(port: number): Promise<void> {
-  if (port <= 0) return
+  if (!Number.isInteger(port) || port <= 0) return
 
   try {
     const text = await runCommand("lsof", ["-ti", `:${port}`])
@@ -543,7 +564,7 @@ async function handleNodeRequest(
   context: ReviewRequestContext,
 ): Promise<void> {
   try {
-    const body = req.method === "POST" ? await readStream(req) : ""
+    const body = req.method === "POST" ? await readStream(req, MAX_FEEDBACK_BODY_BYTES) : ""
     const result = await handleReviewRequest(
       req.method ?? "GET",
       req.url ?? "/",
@@ -553,6 +574,11 @@ async function handleNodeRequest(
     res.writeHead(result.status, result.headers)
     res.end(result.body)
   } catch (e) {
+    if (e instanceof PayloadTooLargeError) {
+      res.writeHead(413, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ error: e.message }))
+      return
+    }
     res.writeHead(500, { "Content-Type": "application/json" })
     res.end(JSON.stringify({ error: String(e) }))
   }
