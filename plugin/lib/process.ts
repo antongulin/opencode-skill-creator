@@ -4,6 +4,7 @@ interface RunProcessOptions {
   cwd?: string
   env?: NodeJS.ProcessEnv
   timeoutMs: number
+  killGraceMs?: number
   maxStderrChars?: number
   onStdoutChunk?: (chunk: string) => void
 }
@@ -38,6 +39,7 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
     }
 
     const maxStderrChars = opts.maxStderrChars ?? 64 * 1024
+    const killGraceMs = opts.killGraceMs ?? 1_000
     const proc = spawn(file, args, {
       cwd: opts.cwd,
       env: opts.env,
@@ -48,10 +50,16 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
     let stderr = ""
     let timedOut = false
     let settled = false
+    let killTimeoutId: ReturnType<typeof setTimeout> | undefined
 
     const timeoutId = setTimeout(() => {
       timedOut = true
       proc.kill()
+      killTimeoutId = setTimeout(() => {
+        if (!settled) {
+          proc.kill("SIGKILL")
+        }
+      }, killGraceMs)
     }, opts.timeoutMs)
 
     proc.stdout.setEncoding("utf-8")
@@ -72,6 +80,7 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
       if (settled) return
       settled = true
       clearTimeout(timeoutId)
+      if (killTimeoutId) clearTimeout(killTimeoutId)
       reject(error)
     })
 
@@ -79,6 +88,7 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
       if (settled) return
       settled = true
       clearTimeout(timeoutId)
+      if (killTimeoutId) clearTimeout(killTimeoutId)
       resolve({ exitCode, stdout, stderr, timedOut })
     })
   })

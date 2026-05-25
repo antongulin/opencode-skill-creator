@@ -31,6 +31,21 @@ test("runProcess reports timeouts without treating null exits as failures", asyn
   expect(isFailedExitCode(result.exitCode)).toBe(false)
 })
 
+test("runProcess force kills processes that ignore timeout termination", async () => {
+  const startedAt = Date.now()
+  const result = await runProcess(
+    [
+      "node",
+      "-e",
+      "process.on('SIGTERM', () => {}); setTimeout(() => undefined, 2000)",
+    ],
+    { timeoutMs: 200, killGraceMs: 20 },
+  )
+
+  expect(result.timedOut).toBe(true)
+  expect(Date.now() - startedAt).toBeLessThan(1_000)
+})
+
 test("runProcess keeps only the tail of stderr", async () => {
   const result = await runProcess(
     ["node", "-e", "process.stderr.write('abcde12345')"],

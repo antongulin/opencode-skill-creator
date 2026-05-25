@@ -12532,6 +12532,7 @@ function runProcess(command, opts) {
       return;
     }
     const maxStderrChars = opts.maxStderrChars ?? 64 * 1024;
+    const killGraceMs = opts.killGraceMs ?? 1000;
     const proc = spawn(file2, args, {
       cwd: opts.cwd,
       env: opts.env,
@@ -12542,9 +12543,15 @@ function runProcess(command, opts) {
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let killTimeoutId;
     const timeoutId = setTimeout(() => {
       timedOut = true;
       proc.kill();
+      killTimeoutId = setTimeout(() => {
+        if (!settled) {
+          proc.kill("SIGKILL");
+        }
+      }, killGraceMs);
     }, opts.timeoutMs);
     proc.stdout.setEncoding("utf-8");
     proc.stdout.on("data", (chunk) => {
@@ -12563,6 +12570,8 @@ function runProcess(command, opts) {
         return;
       settled = true;
       clearTimeout(timeoutId);
+      if (killTimeoutId)
+        clearTimeout(killTimeoutId);
       reject(error45);
     });
     proc.on("close", (exitCode) => {
@@ -12570,6 +12579,8 @@ function runProcess(command, opts) {
         return;
       settled = true;
       clearTimeout(timeoutId);
+      if (killTimeoutId)
+        clearTimeout(killTimeoutId);
       resolve({ exitCode, stdout, stderr, timedOut });
     });
   });
