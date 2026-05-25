@@ -23,6 +23,16 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Install npm with trusted publishing support
+        run: npm install -g npm@latest
+
+      - name: Verify npm trusted publishing support
+        run: |
+          set -euo pipefail
+          NPM_VERSION=$(npm --version)
+          echo "npm ${NPM_VERSION}"
+          node -e 'const version = process.argv[1].split(".").map(Number); if (version[0] < 11 || (version[0] === 11 && (version[1] < 5 || (version[1] === 5 && version[2] < 1)))) { throw new Error("npm is too old for trusted publishing; need npm >= 11.5.1") }' "$NPM_VERSION"
+
       - uses: oven-sh/setup-bun@v2
 
       - name: Install plugin dependencies
