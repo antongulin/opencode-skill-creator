@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
           NPM_VERSION=$(npm --version)
           echo "npm ${NPM_VERSION}"
-          node -e 'const parts = process.argv[1].split("."); if (parts.length < 3) { throw new Error("npm is too old for trusted publishing; need npm >= 11.5.1") } const version = parts.map((part) => Number.parseInt(part, 10)); if (version.some((part) => !Number.isFinite(part)) || version[0] < 11 || (version[0] === 11 && (version[1] < 5 || (version[1] === 5 && version[2] < 1)))) { throw new Error("npm is too old for trusted publishing; need npm >= 11.5.1") }' "$NPM_VERSION"
+          node -e 'const parts = process.argv[1].split("."); if (parts.length !== 3 || parts.some((part) => !/^\d+$/.test(part))) { throw new Error("npm is too old for trusted publishing; need npm >= 11.5.1") } const version = parts.map((part) => Number.parseInt(part, 10)); if (version[0] < 11 || (version[0] === 11 && (version[1] < 5 || (version[1] === 5 && version[2] < 1)))) { throw new Error("npm is too old for trusted publishing; need npm >= 11.5.1") }' "$NPM_VERSION"
 
       - uses: oven-sh/setup-bun@v2
 
