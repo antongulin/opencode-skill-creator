@@ -82,6 +82,8 @@ jobs:
           fi
 
       - name: Publish to npm
+        # npm trusted publishing is bound to this repository/workflow on npmjs.com.
+        # Keep the guard explicit so forks and non-main refs cannot publish.
         if: steps.npm.outputs.exists != 'true' && github.repository == 'antongulin/opencode-skill-creator' && github.ref == 'refs/heads/main'
         run: npm publish --access public --provenance
         working-directory: plugin
