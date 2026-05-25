@@ -4,7 +4,7 @@
  *
  * Port of scripts/improve_description.py.
  *
- * Uses `Bun.$` to call `opencode run` with a temp file prompt (via --file).
+ * Uses Node child_process to call `opencode run` with a temp file prompt (via --file).
  * Parses `<new_description>` tags from the response. Retries once if the
  * description exceeds 1024 characters.
  */
@@ -18,6 +18,7 @@ import {
   classifyEvalFailures,
   formatFailureDiagnostics,
 } from "./failure-taxonomy"
+import { runProcess } from "./process"
 import type { EvalOutput, EvalResultItem } from "./run-eval"
 
 // ---------------------------------------------------------------------------
@@ -42,45 +43,12 @@ async function callOpenCode(
     // as a positional message instead of another --file value.
     cmd.push("--file", tmpPath, "--", "Process the attached file and follow its instructions.")
 
-    const proc = Bun.spawn(cmd, {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env },
-    })
-
     // Collect stdout with timeout. Prefer structured text events from JSON mode.
     let stdout = ""
     let lineBuffer = ""
     const textParts: string[] = []
-    const decoder = new TextDecoder()
-    const reader = proc.stdout.getReader()
-    const stderrReader = proc.stderr.getReader()
-    const stderrDecoder = new TextDecoder()
     const maxStderrChars = 64 * 1024
-    let stderrTail = ""
     const timeoutMs = timeout * 1000
-
-    const stderrDrained = (async () => {
-      try {
-        while (true) {
-          const result = await stderrReader.read()
-          if (result.done) break
-          if (!result.value) continue
-
-          stderrTail += stderrDecoder.decode(result.value, { stream: true })
-          if (stderrTail.length > maxStderrChars) {
-            stderrTail = stderrTail.slice(-maxStderrChars)
-          }
-        }
-
-        stderrTail += stderrDecoder.decode()
-        if (stderrTail.length > maxStderrChars) {
-          stderrTail = stderrTail.slice(-maxStderrChars)
-        }
-      } finally {
-        stderrReader.releaseLock()
-      }
-    })()
 
     const consumeLine = (line: string) => {
       const trimmed = line.trim()
@@ -115,47 +83,21 @@ async function callOpenCode(
       }
     }
 
-    const timeoutId = setTimeout(() => {
-      if (proc.exitCode === null) {
-        proc.kill()
-      }
-    }, timeoutMs)
+    const result = await runProcess(cmd, {
+      env: { ...process.env },
+      timeoutMs,
+      maxStderrChars,
+      onStdoutChunk(chunk) {
+        stdout += chunk
+        lineBuffer += chunk
+        flushLines()
+      },
+    })
 
-    try {
-      while (true) {
-        const result = await reader.read()
-        if (result.done) break
-        if (result.value) {
-          const chunk = decoder.decode(result.value, { stream: true })
-          stdout += chunk
-          lineBuffer += chunk
-          flushLines()
-        }
-      }
+    flushLines(true)
 
-      const finalChunk = decoder.decode()
-      if (finalChunk) {
-        stdout += finalChunk
-        lineBuffer += finalChunk
-      }
-
-      flushLines(true)
-      await proc.exited
-      await stderrDrained
-    } finally {
-      clearTimeout(timeoutId)
-      reader.releaseLock()
-
-      if (proc.exitCode === null) {
-        proc.kill()
-        await proc.exited
-      }
-
-      await stderrDrained.catch(() => undefined)
-    }
-
-    if (proc.exitCode !== 0 && proc.exitCode !== null) {
-      throw new Error(`opencode run exited ${proc.exitCode}\nstderr: ${stderrTail}`)
+    if (result.exitCode !== 0) {
+      throw new Error(`opencode run exited ${result.exitCode}\nstderr: ${result.stderr}`)
     }
 
     if (textParts.length > 0) {

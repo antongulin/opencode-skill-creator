@@ -12515,6 +12515,61 @@ function parseSkillMd(skillPath) {
 import { existsSync as existsSync2, mkdirSync, rmSync, writeFileSync } from "fs";
 import { dirname, join as join3, parse as parse5 } from "path";
 import { randomBytes } from "crypto";
+
+// lib/process.ts
+import { spawn } from "child_process";
+function runProcess(command, opts) {
+  return new Promise((resolve, reject) => {
+    const [file2, ...args] = command;
+    if (!file2) {
+      reject(new Error("Cannot spawn an empty command"));
+      return;
+    }
+    const maxStderrChars = opts.maxStderrChars ?? 64 * 1024;
+    const proc = spawn(file2, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdout: "pipe",
+      stderr: "pipe"
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, opts.timeoutMs);
+    proc.stdout.setEncoding("utf-8");
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      opts.onStdoutChunk?.(chunk);
+    });
+    proc.stderr.setEncoding("utf-8");
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      if (stderr.length > maxStderrChars) {
+        stderr = stderr.slice(-maxStderrChars);
+      }
+    });
+    proc.on("error", (error45) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(timeoutId);
+      reject(error45);
+    });
+    proc.on("close", (exitCode) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve({ exitCode, stdout, stderr, timedOut });
+    });
+  });
+}
+
+// lib/run-eval.ts
 var SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var ALL_ZERO_WARNING = "All should-trigger queries produced 0 triggers with no run errors. Check that trigger evals are using an agent that exposes skill tool events, such as the build agent.";
 function buildOpenCodeRunCommand(query, opts) {
@@ -12581,42 +12636,10 @@ async function runSingleQuery(query, skillName, skillDescription, timeout, proje
 `);
     writeFileSync(skillFile, skillContent);
     const cmd = buildOpenCodeRunCommand(query, { agent, model });
-    const proc = Bun.spawn(cmd, {
-      cwd: projectRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env }
-    });
     let buffer = "";
     let triggered = false;
-    const decoder = new TextDecoder;
-    const reader = proc.stdout.getReader();
-    const stderrReader = proc.stderr.getReader();
-    const stderrDecoder = new TextDecoder;
     const maxStderrChars = 64 * 1024;
-    let stderrTail = "";
     const timeoutMs = timeout * 1000;
-    const stderrDrained = (async () => {
-      try {
-        while (true) {
-          const result = await stderrReader.read();
-          if (result.done)
-            break;
-          if (!result.value)
-            continue;
-          stderrTail += stderrDecoder.decode(result.value, { stream: true });
-          if (stderrTail.length > maxStderrChars) {
-            stderrTail = stderrTail.slice(-maxStderrChars);
-          }
-        }
-        stderrTail += stderrDecoder.decode();
-        if (stderrTail.length > maxStderrChars) {
-          stderrTail = stderrTail.slice(-maxStderrChars);
-        }
-      } finally {
-        stderrReader.releaseLock();
-      }
-    })();
     const consumeLine = (line) => {
       const trimmed = line.trim();
       if (!trimmed)
@@ -12652,42 +12675,20 @@ async function runSingleQuery(query, skillName, skillDescription, timeout, proje
         buffer = "";
       }
     };
-    const timeoutId = setTimeout(() => {
-      if (proc.exitCode === null) {
-        proc.kill();
+    const result = await runProcess(cmd, {
+      cwd: projectRoot,
+      env: { ...process.env },
+      timeoutMs,
+      maxStderrChars,
+      onStdoutChunk(chunk) {
+        buffer += chunk;
+        flushBuffer();
       }
-    }, timeoutMs);
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done)
-          break;
-        if (result.value) {
-          buffer += decoder.decode(result.value, { stream: true });
-          flushBuffer();
-        }
-      }
-      const finalChunk = decoder.decode();
-      if (finalChunk) {
-        buffer += finalChunk;
-      }
-      flushBuffer(true);
-      await proc.exited;
-      await stderrDrained;
-      if ((proc.exitCode ?? 0) !== 0) {
-        const cleanedStderr = stderrTail.trim();
-        throw new Error(cleanedStderr ? `opencode run exited ${proc.exitCode}: ${cleanedStderr}` : `opencode run exited ${proc.exitCode}`);
-      }
-    } finally {
-      clearTimeout(timeoutId);
-      reader.releaseLock();
-      if (proc.exitCode === null) {
-        proc.kill();
-        await proc.exited;
-      }
-      await stderrDrained.catch(() => {
-        return;
-      });
+    });
+    flushBuffer(true);
+    if (result.exitCode !== 0) {
+      const cleanedStderr = result.stderr.trim();
+      throw new Error(cleanedStderr ? `opencode run exited ${result.exitCode}: ${cleanedStderr}` : `opencode run exited ${result.exitCode}`);
     }
     return triggered;
   } finally {
@@ -12840,42 +12841,11 @@ async function callOpenCode(prompt, model, timeout = 300) {
     if (model)
       cmd.push("--model", model);
     cmd.push("--file", tmpPath, "--", "Process the attached file and follow its instructions.");
-    const proc = Bun.spawn(cmd, {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env }
-    });
     let stdout = "";
     let lineBuffer = "";
     const textParts = [];
-    const decoder = new TextDecoder;
-    const reader = proc.stdout.getReader();
-    const stderrReader = proc.stderr.getReader();
-    const stderrDecoder = new TextDecoder;
     const maxStderrChars = 64 * 1024;
-    let stderrTail = "";
     const timeoutMs = timeout * 1000;
-    const stderrDrained = (async () => {
-      try {
-        while (true) {
-          const result = await stderrReader.read();
-          if (result.done)
-            break;
-          if (!result.value)
-            continue;
-          stderrTail += stderrDecoder.decode(result.value, { stream: true });
-          if (stderrTail.length > maxStderrChars) {
-            stderrTail = stderrTail.slice(-maxStderrChars);
-          }
-        }
-        stderrTail += stderrDecoder.decode();
-        if (stderrTail.length > maxStderrChars) {
-          stderrTail = stderrTail.slice(-maxStderrChars);
-        }
-      } finally {
-        stderrReader.releaseLock();
-      }
-    })();
     const consumeLine = (line) => {
       const trimmed = line.trim();
       if (!trimmed)
@@ -12908,45 +12878,20 @@ async function callOpenCode(prompt, model, timeout = 300) {
         lineBuffer = "";
       }
     };
-    const timeoutId = setTimeout(() => {
-      if (proc.exitCode === null) {
-        proc.kill();
+    const result = await runProcess(cmd, {
+      env: { ...process.env },
+      timeoutMs,
+      maxStderrChars,
+      onStdoutChunk(chunk) {
+        stdout += chunk;
+        lineBuffer += chunk;
+        flushLines();
       }
-    }, timeoutMs);
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done)
-          break;
-        if (result.value) {
-          const chunk = decoder.decode(result.value, { stream: true });
-          stdout += chunk;
-          lineBuffer += chunk;
-          flushLines();
-        }
-      }
-      const finalChunk = decoder.decode();
-      if (finalChunk) {
-        stdout += finalChunk;
-        lineBuffer += finalChunk;
-      }
-      flushLines(true);
-      await proc.exited;
-      await stderrDrained;
-    } finally {
-      clearTimeout(timeoutId);
-      reader.releaseLock();
-      if (proc.exitCode === null) {
-        proc.kill();
-        await proc.exited;
-      }
-      await stderrDrained.catch(() => {
-        return;
-      });
-    }
-    if (proc.exitCode !== 0 && proc.exitCode !== null) {
-      throw new Error(`opencode run exited ${proc.exitCode}
-stderr: ${stderrTail}`);
+    });
+    flushLines(true);
+    if (result.exitCode !== 0) {
+      throw new Error(`opencode run exited ${result.exitCode}
+stderr: ${result.stderr}`);
     }
     if (textParts.length > 0) {
       return textParts.join("");
@@ -13928,7 +13873,7 @@ function generateMarkdown(benchmark) {
 }
 
 // lib/review-server.ts
-import { spawn } from "child_process";
+import { spawn as spawn2 } from "child_process";
 import {
   existsSync as existsSync4,
   mkdirSync as mkdirSync3,
@@ -14243,7 +14188,7 @@ function readStream(stream, maxBytes) {
 }
 function runCommand(command, args) {
   return new Promise((resolve) => {
-    const proc = spawn(command, args, {
+    const proc = spawn2(command, args, {
       stdout: "pipe",
       stderr: "ignore"
     });
@@ -14427,7 +14372,7 @@ async function serveReview(opts) {
   const serverUrl = `http://localhost:${actualPort}`;
   if (openBrowser) {
     try {
-      const openProc = spawn("open", [serverUrl], {
+      const openProc = spawn2("open", [serverUrl], {
         detached: true,
         stdio: "ignore"
       });
