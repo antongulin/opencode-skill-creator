@@ -4,7 +4,7 @@
  *
  * Port of scripts/run_eval.py.
  *
- * Uses `Bun.$` to shell out to `opencode run`. For each query a temporary
+ * Uses Node child_process to shell out to `opencode run`. For each query a temporary
  * skill is created in .opencode/skills/ so it appears in the available_skills
  * list. The output is scanned for the temporary skill name to determine
  * whether the skill was triggered.
@@ -13,6 +13,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs"
 import { dirname, join, parse } from "path"
 import { randomBytes } from "crypto"
+
+import { isFailedProcess, runProcess } from "./process"
 
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
@@ -147,45 +149,11 @@ async function runSingleQuery(
 
     const cmd = buildOpenCodeRunCommand(query, { agent, model })
 
-    const proc = Bun.spawn(cmd, {
-      cwd: projectRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env },
-    })
-
     // Collect output with timeout and detect skill invocation from JSON events.
     let buffer = ""
     let triggered = false
-    const decoder = new TextDecoder()
-    const reader = proc.stdout.getReader()
-    const stderrReader = proc.stderr.getReader()
-    const stderrDecoder = new TextDecoder()
     const maxStderrChars = 64 * 1024
-    let stderrTail = ""
     const timeoutMs = timeout * 1000
-
-    const stderrDrained = (async () => {
-      try {
-        while (true) {
-          const result = await stderrReader.read()
-          if (result.done) break
-          if (!result.value) continue
-
-          stderrTail += stderrDecoder.decode(result.value, { stream: true })
-          if (stderrTail.length > maxStderrChars) {
-            stderrTail = stderrTail.slice(-maxStderrChars)
-          }
-        }
-
-        stderrTail += stderrDecoder.decode()
-        if (stderrTail.length > maxStderrChars) {
-          stderrTail = stderrTail.slice(-maxStderrChars)
-        }
-      } finally {
-        stderrReader.releaseLock()
-      }
-    })()
 
     const consumeLine = (line: string) => {
       const trimmed = line.trim()
@@ -225,49 +193,26 @@ async function runSingleQuery(
       }
     }
 
-    const timeoutId = setTimeout(() => {
-      if (proc.exitCode === null) {
-        proc.kill()
-      }
-    }, timeoutMs)
+    const result = await runProcess(cmd, {
+      cwd: projectRoot,
+      env: { ...process.env },
+      timeoutMs,
+      maxStderrChars,
+      onStdoutChunk(chunk) {
+        buffer += chunk
+        flushBuffer()
+      },
+    })
 
-    try {
-      while (true) {
-        const result = await reader.read()
-        if (result.done) break
-        if (result.value) {
-          buffer += decoder.decode(result.value, { stream: true })
-          flushBuffer()
-        }
-      }
+    flushBuffer(true)
 
-      const finalChunk = decoder.decode()
-      if (finalChunk) {
-        buffer += finalChunk
-      }
-
-      flushBuffer(true)
-      await proc.exited
-      await stderrDrained
-
-      if ((proc.exitCode ?? 0) !== 0) {
-        const cleanedStderr = stderrTail.trim()
-        throw new Error(
-          cleanedStderr
-            ? `opencode run exited ${proc.exitCode}: ${cleanedStderr}`
-            : `opencode run exited ${proc.exitCode}`,
-        )
-      }
-    } finally {
-      clearTimeout(timeoutId)
-      reader.releaseLock()
-
-      if (proc.exitCode === null) {
-        proc.kill()
-        await proc.exited
-      }
-
-      await stderrDrained.catch(() => undefined)
+    if (isFailedProcess(result)) {
+      const cleanedStderr = result.stderr.trim()
+      throw new Error(
+        cleanedStderr
+          ? `opencode run exited ${result.exitCode}: ${cleanedStderr}`
+          : `opencode run exited ${result.exitCode}`,
+      )
     }
 
     return triggered

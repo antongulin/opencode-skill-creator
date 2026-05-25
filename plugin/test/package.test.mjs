@@ -99,6 +99,12 @@ test("compiled entrypoint only exposes plugin functions for legacy OpenCode load
   assert.equal(typeof mod.default, "function")
 })
 
+test("compiled entrypoint does not depend on Bun runtime APIs", () => {
+  const source = readFileSync(distEntryPath, "utf-8")
+
+  assert.doesNotMatch(source, /\bBun\b/)
+})
+
 test("compiled review server runs in Node without a Bun runtime global", async () => {
   assert.equal(globalThis.Bun, undefined)
 
