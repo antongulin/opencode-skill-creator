@@ -62,3 +62,24 @@ test("runProcess rejects spawn errors", async () => {
     }),
   ).rejects.toThrow()
 })
+
+test("runProcess does not hang when the child blocks on stdin", async () => {
+  // Regression for the silent stdio typo where `stdout: "pipe", stderr: "pipe"`
+  // was passed instead of `stdio: [...]`, leaving stdin as an unwritten pipe.
+  // The opencode binary (the real consumer) blocks on that stdin and produces
+  // zero output. We simulate that here with a child that explicitly reads stdin
+  // to EOF: with stdin closed it exits 0 immediately; with stdin piped open and
+  // no writer it would hang until the test timeout.
+  const result = await runProcess(
+    [
+      "node",
+      "-e",
+      "process.stdin.on('data', () => {}); process.stdin.on('end', () => { console.log('done'); process.exit(0) })",
+    ],
+    { timeoutMs: 3_000 },
+  )
+
+  expect(result.exitCode).toBe(0)
+  expect(result.timedOut).toBe(false)
+  expect(result.stdout.trim()).toBe("done")
+})

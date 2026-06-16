@@ -40,11 +40,13 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
 
     const maxStderrChars = opts.maxStderrChars ?? 64 * 1024
     const killGraceMs = opts.killGraceMs ?? 1_000
+    // stdin must be closed ("ignore"). The `opencode` binary blocks on an
+    // open-but-unwritten stdin pipe and produces no output — see the regression
+    // test in process.test.ts. `stdout`/`stderr` are not valid spawn keys.
     const proc = spawn(file, args, {
       cwd: opts.cwd,
       env: opts.env,
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["ignore", "pipe", "pipe"],
     })
     let stdout = ""
     let stderr = ""
