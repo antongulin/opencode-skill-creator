@@ -12536,8 +12536,7 @@ function runProcess(command, opts) {
     const proc = spawn(file2, args, {
       cwd: opts.cwd,
       env: opts.env,
-      stdout: "pipe",
-      stderr: "pipe"
+      stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";
     let stderr = "";
