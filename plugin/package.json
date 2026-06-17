@@ -10,7 +10,7 @@
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:ts": "bun test test/*.test.ts",
+    "test:ts": "bun test --isolate test/*.test.ts",
     "prepack": "npm run build && npm test && npm run test:ts"
   },
   "dependencies": {

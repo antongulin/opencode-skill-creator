@@ -1,8 +1,6 @@
-import { afterEach, expect, mock, test } from "bun:test"
+import { expect, mock, test } from "bun:test"
 
 import type { EvalItem, EvalOutput, EvalResultItem } from "../lib/run-eval"
-
-const calls: { evalResults: EvalOutput }[] = []
 
 const result = (
   query: string,
@@ -19,59 +17,56 @@ const result = (
   ...overrides,
 })
 
-mock.module("../lib/utils", () => ({
-  parseSkillMd: () => ({
-    name: "warning-skill",
-    description: "original description",
-    fullContent: "skill content",
-  }),
-}))
-
-mock.module("../lib/run-eval", () => ({
-  findProjectRoot: () => "/tmp/project",
-  buildEvalWarnings: (results: EvalResultItem[]) => {
-    const shouldTriggerResults = results.filter((r) => r.should_trigger)
-    if (shouldTriggerResults.length === 0) return []
-    return shouldTriggerResults.every((r) => r.triggers === 0 && r.errors === 0)
-      ? ["all-zero warning"]
-      : []
-  },
-  runEval: () => ({
-    skill_name: "warning-skill",
-    description: "original description",
-    results: [
-      result("train trigger"),
-      result("train negative", { should_trigger: false }),
-      result("test trigger"),
-    ],
-    warnings: [],
-    summary: {
-      passed: 1,
-      failed: 2,
-      total: 3,
-      run_errors: 0,
-      queries_with_errors: 0,
-    },
-  }),
-}))
-
-mock.module("../lib/improve-description", () => ({
-  improveDescription: (opts: { evalResults: EvalOutput }) => {
-    calls.push({ evalResults: opts.evalResults })
-    return "improved description"
-  },
-}))
-
-mock.module("../lib/report", () => ({
-  generateHtml: () => "<html></html>",
-}))
-
-afterEach(() => {
-  calls.length = 0
-})
-
 test("runLoop derives train warnings from train results and prints unique split warnings", async () => {
-  const { runLoop } = await import("../lib/run-loop")
+  const calls: { evalResults: EvalOutput }[] = []
+
+  mock.module("../lib/utils", () => ({
+    parseSkillMd: () => ({
+      name: "warning-skill",
+      description: "original description",
+      fullContent: "skill content",
+    }),
+  }))
+
+  mock.module("../lib/run-eval", () => ({
+    findProjectRoot: () => "/tmp/project",
+    buildEvalWarnings: (results: EvalResultItem[]) => {
+      const shouldTriggerResults = results.filter((r) => r.should_trigger)
+      if (shouldTriggerResults.length === 0) return []
+      return shouldTriggerResults.every((r) => r.triggers === 0 && r.errors === 0)
+        ? ["all-zero warning"]
+        : []
+    },
+    runEval: () => ({
+      skill_name: "warning-skill",
+      description: "original description",
+      results: [
+        result("train trigger"),
+        result("train negative", { should_trigger: false }),
+        result("test trigger"),
+      ],
+      warnings: [],
+      summary: {
+        passed: 1,
+        failed: 2,
+        total: 3,
+        run_errors: 0,
+        queries_with_errors: 0,
+      },
+    }),
+  }))
+
+  mock.module("../lib/improve-description", () => ({
+    improveDescription: (opts: { evalResults: EvalOutput }) => {
+      calls.push({ evalResults: opts.evalResults })
+      return "improved description"
+    },
+  }))
+
+  mock.module("../lib/report", () => ({
+    generateHtml: () => "<html></html>",
+  }))
+
   const evalSet: EvalItem[] = [
     { query: "train trigger", should_trigger: true },
     { query: "train negative", should_trigger: false },
@@ -84,6 +79,7 @@ test("runLoop derives train warnings from train results and prints unique split 
   }
 
   try {
+    const { runLoop } = await import("../lib/run-loop")
     await runLoop({
       evalSet,
       skillPath: "/tmp/skill/SKILL.md",
@@ -97,10 +93,11 @@ test("runLoop derives train warnings from train results and prints unique split 
       agent: undefined,
       verbose: true,
     })
+
+    expect(calls[0]?.evalResults.warnings).toEqual(["all-zero warning"])
+    expect(errors.filter((line) => line === "Warning: all-zero warning")).toHaveLength(2)
   } finally {
     console.error = originalError
+    mock.restore()
   }
-
-  expect(calls[0]?.evalResults.warnings).toEqual(["all-zero warning"])
-  expect(errors.filter((line) => line === "Warning: all-zero warning")).toHaveLength(2)
 })
