@@ -348,6 +348,19 @@ This is optional, requires the Task tool (using `general` subagent type), and mo
 
 ---
 
+## Trigger Eval Preflight
+
+Before running `skill_eval` or `skill_optimize_loop`, ensure no installed skill conflicts with the skill being tested. `skill_eval` creates a synthetic skill named `<skill-name>-skill-<id>` and only counts invocations of that exact temporary name as triggered. If a real skill with the base name is already visible to OpenCode (via `skills.paths`, installed in `~/.config/opencode/skills/`, or project-level `.opencode/skills/`), the model may load the real skill instead of the synthetic one, producing false negatives.
+
+**Before running eval, check:**
+1. Run `opencode debug skill` — if the skill name appears in the output, it's installed and will conflict.
+2. Remove the conflicting skill or its `skills.paths` entry.
+3. Re-run eval.
+
+The `skill_eval` and `skill_optimize_loop` tools now check for this automatically and throw a clear error if a conflict is detected.
+
+---
+
 ## Description Optimization
 
 The description field in SKILL.md frontmatter is the primary mechanism that determines whether OpenCode invokes a skill. After creating or improving a skill, offer to optimize the description for better triggering accuracy.
