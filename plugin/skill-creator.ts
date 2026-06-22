@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 
 import { validateSkill } from "./lib/validate"
 import { parseSkillMd } from "./lib/utils"
-import { runEval, findProjectRoot } from "./lib/run-eval"
+import { runEval, findProjectRoot, assertNoInstalledSkillConflict } from "./lib/run-eval"
 import { improveDescription } from "./lib/improve-description"
 import { runLoop } from "./lib/run-loop"
 import { generateBenchmark, generateMarkdown } from "./lib/aggregate"
@@ -320,6 +320,15 @@ export async function maybeAutoRefreshPluginCache(
 }
 
 // ---------------------------------------------------------------------------
+// Normalize description override — treat empty string as omitted
+// ---------------------------------------------------------------------------
+
+function normalizeDescriptionOverride(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined
+  return value.trim().length === 0 ? undefined : value
+}
+
+// ---------------------------------------------------------------------------
 // Track running review servers so they can be stopped
 // ---------------------------------------------------------------------------
 
@@ -506,11 +515,12 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
 
           const meta = parseSkillMd(args.skillPath)
           const projectRoot = findProjectRoot()
+          await assertNoInstalledSkillConflict(meta.name, projectRoot)
 
           const result = await runEval({
             evalSet,
             skillName: meta.name,
-            description: args.descriptionOverride ?? meta.description,
+            description: normalizeDescriptionOverride(args.descriptionOverride) ?? meta.description,
             numWorkers: args.numWorkers ?? 10,
             timeout: args.timeout ?? 30,
             projectRoot,
@@ -641,10 +651,14 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             readFileSync(args.evalSetPath, "utf-8"),
           )
 
+          const meta = parseSkillMd(args.skillPath)
+          const projectRoot = findProjectRoot()
+          await assertNoInstalledSkillConflict(meta.name, projectRoot)
+
           const result = await runLoop({
             evalSet,
             skillPath: args.skillPath,
-            descriptionOverride: args.descriptionOverride ?? null,
+            descriptionOverride: normalizeDescriptionOverride(args.descriptionOverride) ?? null,
             numWorkers: args.numWorkers ?? 10,
             timeout: args.timeout ?? 30,
             maxIterations: args.maxIterations ?? 5,

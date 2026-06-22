@@ -225,6 +225,63 @@ async function runSingleQuery(
 }
 
 // ---------------------------------------------------------------------------
+// Conflict guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether a skill with the same base name is already visible to
+ * `opencode` via installed skills or `skills.paths`. If so, throw because
+ * `skill_eval` creates a synthetic `<name>-skill-<id>` and only counts
+ * that temporary name as triggered — an installed skill with the base name
+ * can steal triggers and produce false negatives.
+ */
+export async function assertNoInstalledSkillConflict(
+  skillName: string,
+  projectRoot: string,
+): Promise<void> {
+  try {
+    const proc = Bun.spawn(["opencode", "debug", "skill"], {
+      cwd: projectRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env },
+    })
+
+    const stdout = await new Response(proc.stdout).text()
+    await proc.exited
+
+    const skills = JSON.parse(stdout)
+    if (!Array.isArray(skills)) return
+
+    const conflicts = skills.filter(
+      (s: Record<string, unknown>) =>
+        s && typeof s === "object" && s.name === skillName,
+    )
+    if (conflicts.length === 0) return
+
+    const locations = conflicts
+      .map(
+        (s: Record<string, unknown>) =>
+          (typeof s.location === "string" ? s.location : "unknown location"),
+      )
+      .join(", ")
+
+    throw new Error(
+      `skill_eval conflict: skill "${skillName}" is already available to opencode at ${locations}. ` +
+        `Remove that installed skill or its skills.paths entry before running skill_eval. ` +
+        `The eval tool creates a synthetic skill named "${skillName}-skill-<id>" and only counts ` +
+        `that temporary skill as triggered; an installed skill with the base name can steal ` +
+        `triggers and produce false negatives.`,
+    )
+  } catch (e) {
+    // If `opencode debug skill` is unavailable or fails, skip the guard.
+    if (e instanceof Error && e.message.startsWith("skill_eval conflict:")) {
+      throw e
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry
 // ---------------------------------------------------------------------------
 
