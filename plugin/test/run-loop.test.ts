@@ -88,6 +88,7 @@ test("runLoop derives train warnings from train results and prints unique split 
       maxIterations: 2,
       runsPerQuery: 3,
       triggerThreshold: 0.5,
+      triggerOnly: true,
       holdout: 1 / 3,
       model: undefined,
       agent: undefined,

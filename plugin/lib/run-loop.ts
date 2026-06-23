@@ -88,6 +88,7 @@ export interface RunLoopOptions {
   maxIterations: number
   runsPerQuery: number
   triggerThreshold: number
+  triggerOnly: boolean
   holdout: number
   model: string | undefined
   agent: string | undefined
@@ -142,6 +143,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     maxIterations,
     runsPerQuery,
     triggerThreshold,
+    triggerOnly,
     holdout,
     model,
     agent,
@@ -193,6 +195,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
       projectRoot,
       runsPerQuery,
       triggerThreshold,
+      triggerOnly,
       model,
       agent,
     })

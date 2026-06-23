@@ -484,6 +484,10 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .number()
             .optional()
             .describe("Trigger rate threshold to count as triggered (default: 0.5)"),
+          triggerOnly: tool.schema
+            .boolean()
+            .optional()
+            .describe("Stop each eval run as soon as the synthetic skill is triggered and ignore later workflow failures (default: true)"),
           model: tool.schema
             .string()
             .optional()
@@ -516,6 +520,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             projectRoot,
             runsPerQuery: args.runsPerQuery ?? 3,
             triggerThreshold: args.triggerThreshold ?? 0.5,
+            triggerOnly: args.triggerOnly ?? true,
             model: args.model,
             agent: args.agent ?? "build",
           })
@@ -614,6 +619,10 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .number()
             .optional()
             .describe("Trigger rate threshold (default: 0.5)"),
+          triggerOnly: tool.schema
+            .boolean()
+            .optional()
+            .describe("Stop each eval run as soon as the synthetic skill is triggered and ignore later workflow failures (default: true)"),
           holdout: tool.schema
             .number()
             .optional()
@@ -650,6 +659,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             maxIterations: args.maxIterations ?? 5,
             runsPerQuery: args.runsPerQuery ?? 3,
             triggerThreshold: args.triggerThreshold ?? 0.5,
+            triggerOnly: args.triggerOnly ?? true,
             holdout: args.holdout ?? 0.4,
             model: args.model,
             agent: args.agent ?? "build",

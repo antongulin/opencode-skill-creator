@@ -83,3 +83,24 @@ test("runProcess does not hang when the child blocks on stdin", async () => {
   expect(result.timedOut).toBe(false)
   expect(result.stdout.trim()).toBe("done")
 })
+
+test("runProcess can stop early from stdout parsing without timing out", async () => {
+  const startedAt = Date.now()
+  const result = await runProcess(
+    [
+      "node",
+      "-e",
+      "process.stdout.write('triggered\\n'); setTimeout(() => process.stdout.write('late\\n'), 1000)",
+    ],
+    {
+      timeoutMs: 3_000,
+      onStdoutChunk(chunk) {
+        return chunk.includes("triggered")
+      },
+    },
+  )
+
+  expect(result.timedOut).toBe(false)
+  expect(result.stdout).toContain("triggered")
+  expect(Date.now() - startedAt).toBeLessThan(1_000)
+})

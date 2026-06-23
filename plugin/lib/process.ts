@@ -6,7 +6,7 @@ interface RunProcessOptions {
   timeoutMs: number
   killGraceMs?: number
   maxStderrChars?: number
-  onStdoutChunk?: (chunk: string) => void
+  onStdoutChunk?: (chunk: string) => boolean | void
 }
 
 export interface RunProcessResult {
@@ -52,7 +52,19 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
     let stderr = ""
     let timedOut = false
     let settled = false
+    let stopRequested = false
     let killTimeoutId: ReturnType<typeof setTimeout> | undefined
+
+    const requestStop = () => {
+      if (settled || stopRequested) return
+      stopRequested = true
+      proc.kill()
+      killTimeoutId = setTimeout(() => {
+        if (!settled) {
+          proc.kill("SIGKILL")
+        }
+      }, killGraceMs)
+    }
 
     const timeoutId = setTimeout(() => {
       timedOut = true
@@ -67,7 +79,8 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
     proc.stdout.setEncoding("utf-8")
     proc.stdout.on("data", (chunk: string) => {
       stdout += chunk
-      opts.onStdoutChunk?.(chunk)
+      const shouldStop = opts.onStdoutChunk?.(chunk)
+      if (shouldStop) requestStop()
     })
 
     proc.stderr.setEncoding("utf-8")
