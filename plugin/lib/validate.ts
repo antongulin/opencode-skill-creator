@@ -1,12 +1,14 @@
 /**
  * Skill validation — validates SKILL.md frontmatter and structure.
  *
- * Mirrors scripts/quick_validate.py. Uses hand-parsed YAML (no PyYAML
- * equivalent needed — we parse frontmatter manually like utils.ts).
+ * Uses the yaml package to verify frontmatter is parseable by a strict YAML
+ * parser (matching the runtime parser behaviour), then performs structural
+ * checks on the extracted values.
  */
 
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
+import { parseDocument } from "yaml"
 
 export interface ValidationResult {
   valid: boolean
@@ -49,6 +51,24 @@ export function validateSkill(skillPath: string): ValidationResult {
   }
 
   const frontmatterText = match[1]
+
+  // --- Strict YAML parse check (must match runtime parser) ----------------
+  // OpenCode runtime uses gray-matter → js-yaml which rejects unquoted
+  // scalar values containing colon-space (e.g. "description: foo: bar").
+  // Verify the frontmatter parses cleanly before doing structural checks.
+  const yamlDoc = parseDocument(frontmatterText)
+  if (yamlDoc.errors.length > 0) {
+    const err = yamlDoc.errors[0]
+    const lineNum = err.linePos?.[0]?.line ?? "?"
+    const colNum = err.linePos?.[0]?.col ?? "?"
+    return {
+      valid: false,
+      message:
+        `YAML frontmatter parse error at line ${lineNum}, column ${colNum}: ` +
+        `${err.message}\n` +
+        "Hint: quote the value (e.g. description: \"your text here\") to fix unquoted scalars containing ': '.",
+    }
+  }
 
   // Parse frontmatter into key-value pairs (simple line-based parsing)
   const frontmatter: Record<string, string> = {}
