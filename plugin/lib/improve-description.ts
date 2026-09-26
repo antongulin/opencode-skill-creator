@@ -18,7 +18,7 @@ import {
   classifyEvalFailures,
   formatFailureDiagnostics,
 } from "./failure-taxonomy"
-import { isFailedProcess, runProcess } from "./process"
+import { buildOpencodeEnv, isFailedProcess, runProcess } from "./process"
 import type { EvalOutput, EvalResultItem } from "./run-eval"
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,10 @@ async function callOpenCode(
     }
 
     const result = await runProcess(cmd, {
-      env: { ...process.env },
+      // Same env construction as the eval runner: the child runs with no
+      // explicit cwd (process.cwd()), so pin PWD to that directory instead of
+      // leaking the caller's possibly stale PWD.
+      env: buildOpencodeEnv(process.cwd()),
       timeoutMs,
       maxStderrChars,
       onStdoutChunk(chunk) {

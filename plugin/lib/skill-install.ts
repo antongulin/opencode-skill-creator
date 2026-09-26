@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "fs"
-import { join } from "path"
+import { basename, join } from "path"
 
 export const SKILL_NAME = "opencode-skill-creator"
 export const LEGACY_SKILL_NAME = "skill-creator"
@@ -38,6 +38,18 @@ function copyDirRecursive(src: string, dest: string): void {
 
 function defaultBackupTimestamp(): string {
   return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "")
+}
+
+/**
+ * Remove the contents of the plugin-managed skill directory before an
+ * incremental copy, except the given file names that must survive the wipe.
+ */
+function clearManagedSkillDir(skillsDir: string, keepNames: string[]): void {
+  const keep = new Set(keepNames)
+  for (const entry of readdirSync(skillsDir)) {
+    if (keep.has(entry)) continue
+    rmSync(join(skillsDir, entry), { recursive: true, force: true })
+  }
 }
 
 function uniqueBackupDir(skillsRoot: string, timestamp: string): string {
@@ -122,6 +134,11 @@ export function ensureBundledSkillInstalled(
       if (!existsSync(skillsDir)) {
         renameSync(tmpInstallDir, skillsDir)
       } else {
+        // Incremental copy would keep files deleted upstream from earlier
+        // bundle versions. Only the plugin-managed skill dir is cleared, and
+        // the plugin's own markers (version file, user SKILL.md backup) are
+        // kept; the legacy dir and any other skill dirs are never touched.
+        clearManagedSkillDir(skillsDir, [basename(userSkillBackup), basename(versionFile)])
         copyDirRecursive(tmpInstallDir, skillsDir)
       }
 

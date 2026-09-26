@@ -121,7 +121,12 @@ function prepareReviewLaunch(args: {
       writeFileSync(jsonPath, JSON.stringify(benchmark, null, 2))
       writeFileSync(mdPath, generateMarkdown(benchmark))
       resolvedBenchmarkPath = jsonPath
-    } catch {
+    } catch (error) {
+      // Degrade to "no benchmark tab" but don't hide the failure from the caller.
+      console.warn(
+        `Failed to auto-generate benchmark for ${args.workspace}; continuing without a benchmark tab`,
+        error,
+      )
       resolvedBenchmarkPath = null
     }
   }

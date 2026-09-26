@@ -201,14 +201,30 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     })
     const evalElapsed = (Date.now() - t0) / 1000
 
-    // Split results back into train/test by matching queries
-    const trainQueriesSet = new Set(trainSet.map((q) => q.query))
-    const trainResultList = allResults.results.filter((r) =>
-      trainQueriesSet.has(r.query),
-    )
-    const testResultList = allResults.results.filter(
-      (r) => !trainQueriesSet.has(r.query),
-    )
+    // Split results back into train/test by position. runEval returns one
+    // result per eval-set item in eval-set order (index-keyed aggregation),
+    // and allQueries is [...trainSet, ...testSet], so the split is exact —
+    // unlike query-text matching, which merges duplicated queries across the
+    // train/test boundary and contaminates the holdout score.
+    const resultsAligned =
+      allResults.results.length === allQueries.length &&
+      allResults.results.every((r, i) => r.query === allQueries[i]?.query)
+    let trainResultList: EvalResultItem[]
+    let testResultList: EvalResultItem[]
+    if (resultsAligned) {
+      trainResultList = allResults.results.slice(0, trainSet.length)
+      testResultList = allResults.results.slice(trainSet.length)
+    } else {
+      // Fallback for callers/mocks that don't honor the eval-set ordering
+      // contract (e.g. a mocked runEval): recover by query text as before.
+      const trainQueriesSet = new Set(trainSet.map((q) => q.query))
+      trainResultList = allResults.results.filter((r) =>
+        trainQueriesSet.has(r.query),
+      )
+      testResultList = allResults.results.filter(
+        (r) => !trainQueriesSet.has(r.query),
+      )
+    }
     const trainWarnings = buildEvalWarnings(trainResultList)
     const testWarnings = buildEvalWarnings(testResultList)
 

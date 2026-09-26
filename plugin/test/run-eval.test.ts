@@ -12,6 +12,7 @@ import { tmpdir } from "os"
 import { join } from "path"
 
 import {
+  aggregateEvalResults,
   buildEvalWarnings,
   buildOpenCodeRunCommand,
   symlinkProjectOpenCodeConfig,
@@ -124,4 +125,58 @@ test("symlinkProjectOpenCodeConfig preserves config and excludes tested skill", 
     rmSync(projectRoot, { recursive: true, force: true })
     rmSync(evalRoot, { recursive: true, force: true })
   }
+})
+
+test("aggregateEvalResults keys by eval-set index, so duplicate queries stay separate", () => {
+  const evalSet = [
+    { query: "dup query", should_trigger: true },
+    { query: "unique query", should_trigger: false },
+    { query: "dup query", should_trigger: true },
+  ]
+  // Simulated concurrent completion order (item 2 finishes first).
+  const results = aggregateEvalResults(
+    evalSet,
+    [
+      { itemIndex: 2, triggered: false, errored: false },
+      { itemIndex: 0, triggered: true, errored: false },
+      { itemIndex: 1, triggered: false, errored: false },
+      { itemIndex: 2, triggered: false, errored: false },
+      { itemIndex: 0, triggered: false, errored: false },
+      { itemIndex: 1, triggered: false, errored: false },
+    ],
+    0.5,
+  )
+
+  // One entry per eval-set item, in eval-set order — not merged by query text.
+  expect(results.map((r) => r.query)).toEqual([
+    "dup query",
+    "unique query",
+    "dup query",
+  ])
+  expect(results[0]?.triggers).toBe(1)
+  expect(results[0]?.runs).toBe(2)
+  expect(results[2]?.triggers).toBe(0)
+  expect(results[2]?.runs).toBe(2)
+  expect(results[2]?.pass).toBe(false)
+  expect(results[1]?.pass).toBe(true)
+})
+
+test("aggregateEvalResults counts errors per eval-set item", () => {
+  const evalSet = [{ query: "flaky", should_trigger: true }]
+  const results = aggregateEvalResults(
+    evalSet,
+    [
+      { itemIndex: 0, triggered: false, errored: true },
+      { itemIndex: 0, triggered: true, errored: false },
+      { itemIndex: 0, triggered: true, errored: false },
+    ],
+    0.5,
+  )
+
+  expect(results).toHaveLength(1)
+  expect(results[0]?.errors).toBe(1)
+  expect(results[0]?.successful_runs).toBe(2)
+  expect(results[0]?.trigger_rate).toBe(1)
+  // Errors force a fail regardless of trigger rate.
+  expect(results[0]?.pass).toBe(false)
 })

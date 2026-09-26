@@ -161,6 +161,54 @@ test("ensureBundledSkillInstalled keeps archiving legacy folders when a timestam
   })
 })
 
+test("ensureBundledSkillInstalled clears stale files from the managed skill dir on update", () => {
+  withTempDir((root) => {
+    const bundledSkillDir = createBundledSkill(root)
+    const configDir = join(root, "config")
+    const skillsRoot = join(configDir, "opencode", "skills")
+    const skillsDir = join(skillsRoot, SKILL_NAME)
+    const siblingSkillDir = join(skillsRoot, "unrelated-skill")
+
+    // Existing install from an older bundle version: a file the new bundle no
+    // longer ships, plus the plugin markers that must survive the wipe.
+    mkdirSync(join(skillsDir, "agents"), { recursive: true })
+    writeFileSync(join(skillsDir, "SKILL.md"), "stale skill\n")
+    writeFileSync(join(skillsDir, INSTALL_VERSION_FILE), "1.0.0\n")
+    writeFileSync(join(skillsDir, "SKILL.md.user-backup"), "user backup\n")
+    writeFileSync(join(skillsDir, "removed-in-new-version.md"), "stale\n")
+
+    // A neighbouring skill directory must never be touched.
+    mkdirSync(siblingSkillDir, { recursive: true })
+    writeFileSync(join(siblingSkillDir, "SKILL.md"), "third-party skill\n")
+
+    ensureBundledSkillInstalled({
+      bundledSkillDir,
+      configDir,
+      packageVersion: "1.2.3",
+    })
+
+    expect(existsSync(join(skillsDir, "removed-in-new-version.md"))).toBe(false)
+    // The user's own SKILL.md is preserved across the wipe (it is copied into
+    // the staging dir before the clear), while files the bundle no longer
+    // ships are gone and newly shipped files arrive.
+    expect(readFileSync(join(skillsDir, "SKILL.md"), "utf-8")).toBe("stale skill\n")
+    expect(readFileSync(join(skillsDir, "agents", "helper.md"), "utf-8")).toBe(
+      "helper\n",
+    )
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe(
+      "1.2.3\n",
+    )
+    // The user SKILL.md is re-backed-up before the wipe; the backup must then
+    // survive the clear of the managed dir.
+    expect(readFileSync(join(skillsDir, "SKILL.md.user-backup"), "utf-8")).toBe(
+      "stale skill\n",
+    )
+    expect(readFileSync(join(siblingSkillDir, "SKILL.md"), "utf-8")).toBe(
+      "third-party skill\n",
+    )
+  })
+})
+
 test("ensureBundledSkillInstalled reports install failures without throwing", () => {
   withTempDir((root) => {
     const bundledSkillDir = join(root, "not-a-directory")

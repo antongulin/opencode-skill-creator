@@ -24,7 +24,7 @@ import { dirname, join, parse } from "path"
 import { randomBytes } from "crypto"
 import { tmpdir as osTmpdir } from "os"
 
-import { isFailedProcess, runProcess } from "./process"
+import { buildOpencodeEnv, isFailedProcess, runProcess } from "./process"
 
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
@@ -127,6 +127,9 @@ export async function assertNoInstalledSkillConflict(
   try {
     result = await runProcess(["opencode", "debug", "skill"], {
       cwd: projectRoot,
+      // Same env contract as the eval run: pin PWD to the project being
+      // inspected so a stale caller PWD can't point the check elsewhere.
+      env: buildOpencodeEnv(projectRoot),
       timeoutMs: 10_000,
     })
   } catch {
@@ -314,7 +317,7 @@ async function runSingleQuery(
       // load the *real* project skill under test (base name), so its triggers are
       // attributed to that skill instead of the synthetic one — a false 0. Pin PWD
       // to evalRoot so only the synthetic skill (plus global skills) are in scope.
-      env: { ...process.env, PWD: evalRoot },
+      env: buildOpencodeEnv(evalRoot),
       timeoutMs,
       maxStderrChars,
       onStdoutChunk(chunk) {
@@ -367,10 +370,77 @@ export interface RunEvalOptions {
 }
 
 /**
+ * A single finished query run, keyed by the eval-set item it belongs to.
+ */
+export interface EvalJobResult {
+  /** Index of the eval-set item this run belongs to — the stable aggregation key. */
+  itemIndex: number
+  triggered: boolean
+  errored: boolean
+}
+
+/**
+ * Aggregate per-run outcomes into one result per eval-set item.
+ *
+ * Keyed by eval-set array index, never by query string: duplicate queries must
+ * not merge into one entry (which would blend their runs and corrupt the pass
+ * rate). Results come back in eval-set order — run-loop splits train/test
+ * positionally against the same order instead of re-matching query text.
+ */
+export function aggregateEvalResults(
+  evalSet: EvalItem[],
+  jobResults: EvalJobResult[],
+  triggerThreshold: number,
+): EvalResultItem[] {
+  const byItem = new Map<number, { triggers: boolean[]; errors: number }>()
+  for (const jr of jobResults) {
+    let bucket = byItem.get(jr.itemIndex)
+    if (!bucket) {
+      bucket = { triggers: [], errors: 0 }
+      byItem.set(jr.itemIndex, bucket)
+    }
+    bucket.triggers.push(jr.triggered)
+    if (jr.errored) bucket.errors += 1
+  }
+
+  const results: EvalResultItem[] = []
+  for (const [itemIndex, item] of evalSet.entries()) {
+    const bucket = byItem.get(itemIndex)
+    if (!bucket) continue
+
+    const triggers = bucket.triggers
+    const errors = bucket.errors
+    const successfulRuns = triggers.length - errors
+    const triggerRate =
+      successfulRuns > 0 ? triggers.filter(Boolean).length / successfulRuns : 0
+    const shouldTrigger = item.should_trigger
+    const thresholdPass = shouldTrigger
+      ? triggerRate >= triggerThreshold
+      : triggerRate < triggerThreshold
+    const didPass = errors === 0 && thresholdPass
+
+    results.push({
+      query: item.query,
+      should_trigger: shouldTrigger,
+      trigger_rate: triggerRate,
+      triggers: triggers.filter(Boolean).length,
+      runs: triggers.length,
+      successful_runs: successfulRuns,
+      errors,
+      pass: didPass,
+    })
+  }
+  return results
+}
+
+/**
  * Run the full eval set and return results.
  *
  * Parallelism is implemented via `Promise.all` with a concurrency limiter
  * instead of Python's ProcessPoolExecutor.
+ *
+ * Returned `results` contain one entry per eval-set item, in eval-set order
+ * (duplicate queries stay separate).
  */
 export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
   const {
@@ -387,22 +457,18 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     agent = "build",
   } = opts
 
-  // Build the full list of (item, runIdx) jobs
-  type Job = { item: EvalItem; runIdx: number }
+  // Build the full list of (item, runIdx) jobs. itemIndex is the stable key
+  // that ties every run back to its eval-set entry.
+  type Job = { item: EvalItem; runIdx: number; itemIndex: number }
   const jobs: Job[] = []
-  for (const item of evalSet) {
+  evalSet.forEach((item, itemIndex) => {
     for (let r = 0; r < runsPerQuery; r++) {
-      jobs.push({ item, runIdx: r })
+      jobs.push({ item, runIdx: r, itemIndex })
     }
-  }
+  })
 
   // Concurrency-limited execution
-  const jobResults: {
-    query: string
-    triggered: boolean
-    item: EvalItem
-    errored: boolean
-  }[] = []
+  const jobResults: EvalJobResult[] = []
   let idx = 0
 
   async function worker() {
@@ -421,17 +487,15 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
           model,
         )
         jobResults.push({
-          query: job.item.query,
+          itemIndex: job.itemIndex,
           triggered,
-          item: job.item,
           errored: false,
         })
       } catch (e) {
         console.error(`Warning: query failed: ${e}`)
         jobResults.push({
-          query: job.item.query,
+          itemIndex: job.itemIndex,
           triggered: false,
-          item: job.item,
           errored: true,
         })
       }
@@ -441,41 +505,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
   const workers = Array.from({ length: Math.min(numWorkers, jobs.length) }, () => worker())
   await Promise.all(workers)
 
-  // Aggregate per-query
-  const queryTriggers: Map<string, boolean[]> = new Map()
-  const queryErrors: Map<string, number> = new Map()
-  const queryItems: Map<string, EvalItem> = new Map()
-  for (const jr of jobResults) {
-    if (!queryTriggers.has(jr.query)) queryTriggers.set(jr.query, [])
-    queryTriggers.get(jr.query)!.push(jr.triggered)
-    queryErrors.set(jr.query, (queryErrors.get(jr.query) ?? 0) + (jr.errored ? 1 : 0))
-    queryItems.set(jr.query, jr.item)
-  }
-
-  const results: EvalResultItem[] = []
-  for (const [query, triggers] of queryTriggers) {
-    const item = queryItems.get(query)!
-    const errors = queryErrors.get(query) ?? 0
-    const successfulRuns = triggers.length - errors
-    const triggerRate =
-      successfulRuns > 0 ? triggers.filter(Boolean).length / successfulRuns : 0
-    const shouldTrigger = item.should_trigger
-    const thresholdPass = shouldTrigger
-      ? triggerRate >= triggerThreshold
-      : triggerRate < triggerThreshold
-    const didPass = errors === 0 && thresholdPass
-
-    results.push({
-      query,
-      should_trigger: shouldTrigger,
-      trigger_rate: triggerRate,
-      triggers: triggers.filter(Boolean).length,
-      runs: triggers.length,
-      successful_runs: successfulRuns,
-      errors,
-      pass: didPass,
-    })
-  }
+  // Aggregate per eval-set item (index-keyed, eval-set order)
+  const results = aggregateEvalResults(evalSet, jobResults, triggerThreshold)
 
   const passed = results.filter((r) => r.pass).length
   const runErrors = results.reduce((acc, r) => acc + r.errors, 0)

@@ -25,6 +25,19 @@ export function isFailedProcess(result: RunProcessResult): boolean {
 }
 
 /**
+ * Build the child environment for an `opencode` invocation pinned to `cwd`.
+ *
+ * opencode resolves its project root from $PWD rather than the spawn cwd, so
+ * an inherited/stale caller PWD leaks the wrong project into the child — for
+ * eval runs that means the real skill under test can steal triggers. Every
+ * `opencode` call shares this constructor: `cwd` is always the directory the
+ * child must treat as its project root (eval roots pass their temp root).
+ */
+export function buildOpencodeEnv(cwd: string): NodeJS.ProcessEnv {
+  return { ...process.env, PWD: cwd }
+}
+
+/**
  * Spawn a command without a shell, collect stdout/stderr, and optionally stream
  * stdout chunks to a parser. Rejects only when the process cannot be spawned;
  * callers decide how to handle exit codes and timeouts. Use `timedOut` to

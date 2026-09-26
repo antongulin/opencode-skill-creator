@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test"
 
-import { isFailedExitCode, isFailedProcess, runProcess } from "../lib/process"
+import { buildOpencodeEnv, isFailedExitCode, isFailedProcess, runProcess } from "../lib/process"
+
+test("buildOpencodeEnv pins PWD to the given cwd and inherits the rest", () => {
+  const env = buildOpencodeEnv("/tmp/eval-root")
+
+  expect(env.PWD).toBe("/tmp/eval-root")
+  expect(env.PATH).toBe(process.env.PATH)
+})
 
 test("isFailedExitCode treats only defined non-zero exit codes as failures", () => {
   expect(isFailedExitCode(1)).toBe(true)
