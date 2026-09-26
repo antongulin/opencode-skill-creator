@@ -444,6 +444,45 @@ function runCommand(command: string, args: string[]): Promise<CommandResult> {
   })
 }
 
+/**
+ * Open a URL in the user's browser using the platform-appropriate command.
+ *
+ * Best-effort and fully non-blocking: spawn failures (for example a missing
+ * `open`, `xdg-open`, or `cmd` binary) are swallowed so they can never surface
+ * as an uncaught exception in the host process.
+ */
+function openBrowserUrl(url: string): void {
+  let command: string
+  let args: string[]
+  if (process.platform === "win32") {
+    // `start` treats the first quoted argument as the window title, so pass an
+    // explicit empty title before the URL.
+    command = "cmd"
+    args = ["/c", "start", "", url]
+  } else if (process.platform === "darwin") {
+    command = "open"
+    args = [url]
+  } else {
+    command = "xdg-open"
+    args = [url]
+  }
+
+  try {
+    const openProc = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    })
+    // spawn() reports ENOENT (and similar) through the "error" event; without
+    // a listener Node turns it into an uncaughtException.
+    openProc.on("error", () => {
+      /* ignore — headless or restricted environment */
+    })
+    openProc.unref()
+  } catch {
+    /* ignore — headless environment */
+  }
+}
+
 async function killPort(port: number): Promise<void> {
   if (!Number.isInteger(port) || port <= 0) return
 
@@ -702,15 +741,7 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
 
   if (openBrowser) {
     // Open browser (best-effort, non-blocking)
-    try {
-      const openProc = spawn("open", [serverUrl], {
-        detached: true,
-        stdio: "ignore",
-      })
-      openProc.unref()
-    } catch {
-      /* ignore — headless environment */
-    }
+    openBrowserUrl(serverUrl)
   }
 
   return {
