@@ -333,6 +333,26 @@ export async function maybeAutoRefreshPluginCache(
 
 const activeServers: Map<string, { stop: () => Promise<void>; url: string }> = new Map()
 
+/**
+ * Stop every tracked review server and empty the registry.
+ *
+ * Best-effort: one failing server must not prevent the remaining servers from
+ * being closed, so callers always get a complete shutdown.
+ */
+async function stopAllActiveServers(): Promise<string[]> {
+  const stopped: string[] = []
+  for (const [ws, srv] of activeServers) {
+    try {
+      await srv.stop()
+      stopped.push(ws)
+    } catch {
+      // Best-effort shutdown — keep closing the remaining servers.
+    }
+  }
+  activeServers.clear()
+  return stopped
+}
+
 // ---------------------------------------------------------------------------
 // Plugin export
 // ---------------------------------------------------------------------------
@@ -865,12 +885,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           }
 
           // Stop all
-          const stopped: string[] = []
-          for (const [ws, srv] of activeServers) {
-            await srv.stop()
-            stopped.push(ws)
-          }
-          activeServers.clear()
+          const stopped = await stopAllActiveServers()
           return JSON.stringify({ stopped })
         },
       }),
@@ -933,6 +948,15 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           })
         },
       }),
+    },
+
+    // ---------------------------------------------------------------
+    // dispose — release plugin resources on unload
+    // ---------------------------------------------------------------
+    async dispose() {
+      // Review servers hold TCP ports; close them when the plugin unloads so
+      // repeated reloads cannot leak listeners.
+      await stopAllActiveServers()
     },
   }
 }
