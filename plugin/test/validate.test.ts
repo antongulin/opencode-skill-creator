@@ -17,6 +17,22 @@ const withSkill = <T>(frontmatter: string, fn: (skillPath: string) => T): T => {
   }
 }
 
+// Windows checkouts (core.autocrlf=true) produce CRLF files — validation must
+// accept them and keep reporting correct line numbers.
+const withCrlfSkill = <T>(frontmatter: string, fn: (skillPath: string) => T): T => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-creator-validate-"))
+  try {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, "SKILL.md"),
+      `---\r\n${frontmatter}\r\n---\r\n\r\n# Test Skill\r\n`,
+    )
+    return fn(dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 test("quoted description containing colon-space passes", () => {
   withSkill(
     `name: pdf-reader
@@ -166,6 +182,48 @@ description: Use when reading docs.`,
       expect(result.valid).toBe(false)
       expect(result.message).toContain("name")
       expect(result.message).toContain("line 2")
+      expect(result.message).toContain("Hint: quote the value")
+    },
+  )
+})
+
+test("CRLF frontmatter passes validation", () => {
+  withCrlfSkill(
+    `name: pdf-reader
+description: "Use for PDF files: reading, extracting."`,
+    (skillPath) => {
+      expect(validateSkill(skillPath)).toEqual({
+        valid: true,
+        message: "Skill is valid!",
+      })
+    },
+  )
+})
+
+test("CRLF block scalar description passes validation", () => {
+  withCrlfSkill(
+    `name: pdf-reader
+description: |2-
+  Use for PDF files: reading, extracting.`,
+    (skillPath) => {
+      expect(validateSkill(skillPath)).toEqual({
+        valid: true,
+        message: "Skill is valid!",
+      })
+    },
+  )
+})
+
+test("CRLF unquoted colon-space still fails with correct line number", () => {
+  withCrlfSkill(
+    `name: pdf-reader
+description: Use for PDF files: reading, extracting.`,
+    (skillPath) => {
+      const result = validateSkill(skillPath)
+
+      expect(result.valid).toBe(false)
+      expect(result.message).toContain("description")
+      expect(result.message).toContain("line 3")
       expect(result.message).toContain("Hint: quote the value")
     },
   )
