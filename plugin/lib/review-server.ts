@@ -397,12 +397,6 @@ class PayloadTooLargeError extends Error {
   }
 }
 
-interface CommandResult {
-  ok: boolean
-  stdout: string
-  error?: Error
-}
-
 function readStream(stream: IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = ""
@@ -427,46 +421,11 @@ function readStream(stream: IncomingMessage, maxBytes: number): Promise<string> 
   })
 }
 
-function runCommand(command: string, args: string[]): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const proc = spawn(command, args, {
-      stdout: "pipe",
-      stderr: "ignore",
-    })
-    let text = ""
-
-    proc.stdout?.setEncoding("utf-8")
-    proc.stdout?.on("data", (chunk) => {
-      text += chunk
-    })
-    proc.on("error", (error) => resolve({ ok: false, stdout: text, error }))
-    proc.on("close", (code) => resolve({ ok: code === 0, stdout: text }))
-  })
-}
-
-async function killPort(port: number): Promise<void> {
-  if (!Number.isInteger(port) || port <= 0) return
-
-  try {
-    const result = await runCommand("lsof", ["-ti", `:${port}`])
-    const text = result.stdout
-
-    for (const pidStr of text.trim().split("\n")) {
-      const pid = parseInt(pidStr.trim(), 10)
-      if (!isNaN(pid)) {
-        try {
-          process.kill(pid, "SIGTERM")
-        } catch {
-          /* process already gone */
-        }
-      }
-    }
-    if (text.trim()) {
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-  } catch {
-    /* lsof not available or no process found */
-  }
+function isAddressInUse(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as NodeJS.ErrnoException).code === "EADDRINUSE"
+  )
 }
 
 interface ReviewRequestContext {
@@ -608,6 +567,29 @@ function listen(server: Server, port: number): Promise<void> {
   })
 }
 
+/**
+ * Bind to a requested port without touching any other process. OpenCode runs
+ * alongside a user's other services, so the previous `lsof -ti | SIGTERM`
+ * behavior could kill an unrelated listener on a shared port. When the port is
+ * already occupied we surface an actionable error instead.
+ */
+async function bindReviewServer(
+  server: Server,
+  port: number,
+): Promise<void> {
+  try {
+    await listen(server, port)
+    return
+  } catch (error) {
+    if (isAddressInUse(error)) {
+      throw new Error(
+        `Review server port ${port} is already in use by another process. Stop that process or pass a different port (skill_serve_review accepts a "port" argument, and port 0 picks a free port).`,
+      )
+    }
+    throw error
+  }
+}
+
 function closeServer(server: Server, sockets: Set<Socket>): Promise<void> {
   for (const socket of sockets) {
     socket.destroy()
@@ -670,9 +652,8 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
     previous = loadPreviousIteration(previousWorkspace)
   }
 
-  // Kill any existing process on the target port
-  await killPort(port)
-
+  // Bind without killing any other process on the requested port (see
+  // bindReviewServer). A busy port fails loudly instead of stealing the port.
   const context: ReviewRequestContext = {
     workspace,
     skillName,
@@ -691,7 +672,7 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
       sockets.delete(socket)
     })
   })
-  await listen(server, port)
+  await bindReviewServer(server, port)
 
   const address = server.address()
   if (!address || typeof address === "string") {
@@ -720,7 +701,6 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
     stop: () => closeServer(server, sockets),
   }
 }
-
 // ---------------------------------------------------------------------------
 // Static HTML export
 // ---------------------------------------------------------------------------

@@ -96,33 +96,75 @@ export function buildEvalWarnings(results: EvalResultItem[]): string[] {
   return allZeroWithoutErrors ? [ALL_ZERO_WARNING] : []
 }
 
+export interface EnumeratedSkill {
+  name: string
+  location?: string
+}
+
+/**
+ * Enumerate the skills installed for a project. Returns `null` when the
+ * mechanism is unavailable so the caller can fail loudly instead of silently
+ * skipping the conflict guard.
+ */
+export type SkillEnumerator = (
+  projectRoot: string,
+) => Promise<EnumeratedSkill[] | null>
+
+function parseCliSkillList(stdoutText: string): EnumeratedSkill[] | null {
+  try {
+    const parsed = JSON.parse(stdoutText) as unknown
+    if (!Array.isArray(parsed)) return null
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return []
+      const record = entry as Record<string, unknown>
+      if (typeof record.name !== "string") return []
+      return [
+        {
+          name: record.name,
+          location:
+            typeof record.location === "string" ? record.location : undefined,
+        },
+      ]
+    })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Find locations of an installed skill with `skillName` inside a skill list.
+ * Shared by the V1 CLI JSON parser and the V2 `ctx.skill.list` path.
+ */
+export function findSkillConflictsInList(
+  skills: readonly EnumeratedSkill[],
+  skillName: string,
+): string[] {
+  return skills
+    .filter((entry) => entry.name === skillName)
+    .map((entry) =>
+      typeof entry.location === "string" && entry.location.trim()
+        ? entry.location
+        : "unknown location",
+    )
+}
+
 export function findSkillConflicts(
   stdoutText: string,
   skillName: string,
 ): string[] {
-  try {
-    const parsed = JSON.parse(stdoutText) as unknown
-    if (!Array.isArray(parsed)) return []
-
-    return parsed.flatMap((entry) => {
-      if (!entry || typeof entry !== "object") return []
-      const record = entry as Record<string, unknown>
-      if (record.name !== skillName) return []
-      return [
-        typeof record.location === "string" && record.location.trim()
-          ? record.location
-          : "unknown location",
-      ]
-    })
-  } catch {
-    return []
-  }
+  const skills = parseCliSkillList(stdoutText)
+  if (skills === null) return []
+  return findSkillConflictsInList(skills, skillName)
 }
 
-export async function assertNoInstalledSkillConflict(
-  skillName: string,
-  projectRoot: string,
-): Promise<void> {
+/**
+ * V1 enumerator: `opencode debug skill` prints a JSON array of skills.
+ * OpenCode V2 removed that subcommand, so this returns `null` there and the
+ * V2 tool path supplies `ctx.skill.list` instead.
+ */
+export const cliInstalledSkillEnumerator: SkillEnumerator = async (
+  projectRoot,
+) => {
   let result
   try {
     result = await runProcess(["opencode", "debug", "skill"], {
@@ -130,17 +172,66 @@ export async function assertNoInstalledSkillConflict(
       timeoutMs: 10_000,
     })
   } catch {
-    return
+    return null
   }
 
-  if (isFailedProcess(result)) return
+  if (isFailedProcess(result)) return null
+  return parseCliSkillList(result.stdout)
+}
 
-  const locations = findSkillConflicts(result.stdout, skillName)
+export function skillConflictMessage(
+  skillName: string,
+  locations: string[],
+): string {
+  return `skill_eval conflict: skill "${skillName}" is already available to opencode at ${locations.join(", ")}. Remove that installed skill or its skills.paths entry before running skill_eval. The eval tool creates a synthetic skill named "${skillName}-skill-<id>" and only counts that temporary skill as triggered; an installed skill with the base name can steal triggers and produce false negatives.`
+}
+
+export function skillEnumerationUnavailableMessage(skillName: string): string {
+  return `skill_eval aborted: could not enumerate the skills installed in this project to check whether "${skillName}" is already available. A pre-installed skill with the base name can steal triggers and produce false negatives, so the eval does not run rather than return misleading results. In OpenCode V2 the plugin uses the skill list API; if that call fails, retry once the server is healthy. In V1 the check uses \`opencode debug skill\`.`
+}
+
+export async function assertNoInstalledSkillConflict(
+  skillName: string,
+  projectRoot: string,
+  enumerate: SkillEnumerator = cliInstalledSkillEnumerator,
+): Promise<void> {
+  const skills = await enumerate(projectRoot)
+  if (skills === null) {
+    throw new Error(skillEnumerationUnavailableMessage(skillName))
+  }
+
+  const locations = findSkillConflictsInList(skills, skillName)
   if (locations.length === 0) return
 
-  throw new Error(
-    `skill_eval conflict: skill "${skillName}" is already available to opencode at ${locations.join(", ")}. Remove that installed skill or its skills.paths entry before running skill_eval. The eval tool creates a synthetic skill named "${skillName}-skill-<id>" and only counts that temporary skill as triggered; an installed skill with the base name can steal triggers and produce false negatives.`,
-  )
+  throw new Error(skillConflictMessage(skillName, locations))
+}
+
+/**
+ * Build the V2 skill enumerator from `ctx.skill.list()`. Returning null on any
+ * failure lets the conflict guard abort loudly rather than silently skipping.
+ */
+export function createV2SkillEnumerator(ctx: {
+  skill: { list(input?: unknown): Promise<unknown> }
+}): SkillEnumerator {
+  return async () => {
+    try {
+      const output = (await ctx.skill.list()) as {
+        data?: readonly { name?: unknown; path?: unknown }[]
+      }
+      if (!output || !Array.isArray(output.data)) return null
+      return output.data.flatMap((entry) => {
+        if (!entry || typeof entry.name !== "string") return []
+        return [
+          {
+            name: entry.name,
+            location: typeof entry.path === "string" ? entry.path : undefined,
+          },
+        ]
+      })
+    } catch {
+      return null
+    }
+  }
 }
 
 /**

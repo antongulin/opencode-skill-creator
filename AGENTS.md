@@ -85,7 +85,23 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Child DOX Index
 
-This project is not yet indexed. Before continuing you must scan the project, build the DOX tree and replace this message with the actual index. Go deep and scan files recursively to properly evaluate complexity and create nested DOX files where needed.
+The root `AGENTS.md` owns cross-cutting repository rules. No child `AGENTS.md` files exist;
+the areas below are described here and should get a child contract only when one becomes a
+distinct ownership boundary.
+
+- `plugin/` — the OpenCode plugin (npm package `opencode-skill-creator`): TypeScript source
+  (`skill-creator.ts`, `runtime-entry.ts`, `lib/`), the committed `dist/` bundle, the installer
+  CLI (`bin/`), the build script (`scripts/build.mjs`), and the test suites. Build with
+  `npm run build`; verify with `npm test` and `npm run test:ts`. The bundle must externalize
+  `@opencode-ai/plugin` and `@opencode/plugin` (bun `--external=<name>` form) and never inline
+  `node_modules`.
+- `opencode-skill-creator/` — the bundled skill (`SKILL.md`, `agents/`, `references/`,
+  `templates/`). Copied into `plugin/skill/` and shipped in the package; edit both the source
+  skill and the plugin copy when behavior changes.
+- `examples/` — usage examples, not part of the published package.
+- `.github/workflows/` — `ci.yml` (npm ci + build + tests on PRs), `publish.yml` (auto
+  patch-version bump and npm publish on `main`), and `code-review.yml` (Robin).
+
 <!-- DOX:END -->
 
 <!-- BASELINE:BEGIN (managed by agents-md-bootstrap) -->

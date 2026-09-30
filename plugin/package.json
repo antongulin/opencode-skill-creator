@@ -53,10 +53,17 @@
   },
   "license": "Apache-2.0",
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
+    "@opencode-ai/plugin": ">=1.18.29",
+    "@opencode/plugin": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.0.0",
+    "@opencode/plugin": "^2.0.19",
     "@types/bun": "latest"
   }
 }

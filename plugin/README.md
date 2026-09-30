@@ -6,6 +6,21 @@ A **skill + plugin** for [OpenCode](https://opencode.ai) that helps you create, 
 
 This is a faithful adaptation of Anthropic's official [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) for Claude Code, fully rewritten to work with OpenCode's extensibility mechanisms. The Python scripts from the original have been ported to TypeScript and packaged as an OpenCode plugin with custom tools.
 
+## Compatibility
+
+| OpenCode | Config key | Entrypoint | Plugin SDK |
+|---|---|---|---|
+| **V2** (current) | `plugins` | `id` + `setup()` | `@opencode/plugin` ^2.0.0 |
+| **V1** ≥ 1.18.29 | `plugin` | object `server()` | `@opencode-ai/plugin` ≥ 1.18.29 |
+
+The published package ships both entrypoints from one bundle, so the same install works on
+V2 and on the supported V1 floor. OpenCode V2 reads the `plugins` array; V1 reads `plugin`.
+The installer writes `plugins` and leaves an existing `plugin` array untouched.
+
+Older V1 releases (before 1.18.29) only accept a function default export, which this package
+no longer provides. Use an older package version or add a dedicated entrypoint if you must
+support them.
+
 ## Install
 
 Package: https://www.npmjs.com/package/opencode-skill-creator
@@ -39,7 +54,7 @@ npx opencode-skill-creator --about
 What this command does:
 
 1. Creates/updates `~/.config/opencode/opencode.json`
-2. Adds `"opencode-skill-creator"` to the `plugin` array
+2. Adds `"opencode-skill-creator"` to the `plugins` array (V2), leaving any legacy `plugin` array untouched
 3. Leaves your existing plugins untouched
 
 Then:
@@ -56,7 +71,7 @@ Manual equivalent for the same result:
 
 ```json
 {
-  "plugin": ["opencode-skill-creator"]
+  "plugins": ["opencode-skill-creator"]
 }
 ```
 
@@ -74,7 +89,7 @@ If your file already has plugins, append this package to the list:
 
 ```json
 {
-  "plugin": [
+  "plugins": [
     "your-existing-plugin",
     "opencode-skill-creator"
   ]
@@ -98,7 +113,7 @@ npx opencode-skill-creator install --global
 
 ```json
 {
-  "plugin": ["opencode-skill-creator"]
+  "plugins": ["opencode-skill-creator"]
 }
 ```
 
@@ -119,7 +134,7 @@ npx opencode-skill-creator install --project
 
 ```json
 {
-  "plugin": ["opencode-skill-creator"]
+  "plugins": ["opencode-skill-creator"]
 }
 ```
 
@@ -143,7 +158,7 @@ Then create `~/.config/opencode/package.json` if needed:
 ```json
 {
   "dependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
+    "@opencode-ai/plugin": ">=1.18.29"
   }
 }
 ```
@@ -156,6 +171,12 @@ After you add `opencode-skill-creator` and restart OpenCode:
 2. The npm package loads compiled JavaScript from `dist/skill-creator.js`.
 3. On first plugin startup, it auto-copies skill files to `~/.config/opencode/skills/opencode-skill-creator/`.
 4. Restart OpenCode after changing config because plugin config is loaded at startup.
+
+The package declares `@opencode-ai/plugin` as a required peer (the compiled bundle imports
+`tool` from it at runtime) and `@opencode/plugin` as an optional peer. npm installs the
+required peer automatically; the optional V2 SDK is only needed to type-check a source build.
+If your package manager still reports a peer conflict, install a version of `@opencode/plugin`
+that matches your OpenCode release.
 
 ### Verify install
 
@@ -205,7 +226,7 @@ The backup preserves user files and renames `SKILL.md` to `SKILL.md.backup` so O
 ### For LLMs / automation (compact)
 
 ```json
-{ "plugin": ["opencode-skill-creator"] }
+{ "plugins": ["opencode-skill-creator"] }
 ```
 
 ## What it does

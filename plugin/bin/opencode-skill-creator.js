@@ -245,11 +245,13 @@ function saveConfig(path, raw, config) {
     tabSize: 2,
   }
 
-  const edits = Array.isArray(config.plugin)
-    ? modify(raw, ["plugin", -1], "opencode-skill-creator", {
+  // OpenCode V2 reads the "plugins" array; a pre-existing V1 "plugin" array is
+  // left untouched so older OpenCode versions keep loading the plugin.
+  const edits = Array.isArray(config.plugins)
+    ? modify(raw, ["plugins", -1], "opencode-skill-creator", {
         formattingOptions,
       })
-    : modify(raw, ["plugin"], ["opencode-skill-creator"], {
+    : modify(raw, ["plugins"], ["opencode-skill-creator"], {
         formattingOptions,
       })
 
@@ -257,16 +259,29 @@ function saveConfig(path, raw, config) {
   writeFileSync(path, applyEdits(raw, edits), "utf-8")
 }
 
-function ensurePlugin(config) {
-  if (typeof config.plugin === "undefined") {
-    return true
-  }
+function isPluginEntry(entry) {
+  if (entry === "opencode-skill-creator") return true
+  return (
+    entry !== null &&
+    typeof entry === "object" &&
+    !Array.isArray(entry) &&
+    entry.package === "opencode-skill-creator"
+  )
+}
 
-  if (!Array.isArray(config.plugin)) {
+function ensurePlugin(config) {
+  if (typeof config.plugin !== "undefined" && !Array.isArray(config.plugin)) {
     throw new Error('Expected "plugin" to be an array in opencode config')
   }
 
-  return !config.plugin.includes("opencode-skill-creator")
+  if (typeof config.plugins !== "undefined" && !Array.isArray(config.plugins)) {
+    throw new Error('Expected "plugins" to be an array in opencode config')
+  }
+
+  // Append to the V2 "plugins" array only when it does not already list the
+  // plugin. A legacy V1 "plugin" entry does not suppress the V2 entry, so an
+  // upgraded install gets a working V2 registration.
+  return !Array.isArray(config.plugins) || !config.plugins.some(isPluginEntry)
 }
 
 function main() {
@@ -292,10 +307,10 @@ function main() {
   if (changed) {
     saveConfig(configPath, raw, config)
     console.log(`Updated ${configPath}`)
-    console.log('Added "opencode-skill-creator" to the "plugin" array.')
+    console.log('Added "opencode-skill-creator" to the "plugins" array.')
   } else {
     console.log(`No changes needed for ${configPath}`)
-    console.log('"opencode-skill-creator" is already in the "plugin" array.')
+    console.log('"opencode-skill-creator" is already in the "plugins" array.')
   }
 
   if (global) {

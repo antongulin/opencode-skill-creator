@@ -13,18 +13,21 @@
  *   Copy this directory to .opencode/plugins/ or ~/.config/opencode/plugins/
  */
 
-import { type Plugin, tool } from "@opencode-ai/plugin"
+import { type Plugin, tool, type ToolDefinition } from "@opencode-ai/plugin"
+import type { Plugin as V2Plugin } from "@opencode/plugin"
 import { join, dirname, isAbsolute, relative, sep } from "path"
 import { homedir } from "os"
 import { fileURLToPath } from "url"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
-
 import { validateSkill } from "./lib/validate"
 import { parseSkillMd } from "./lib/utils"
 import {
   assertNoInstalledSkillConflict,
-  runEval,
+  cliInstalledSkillEnumerator,
+  createV2SkillEnumerator,
   findProjectRoot,
+  runEval,
+  type SkillEnumerator,
 } from "./lib/run-eval"
 import { improveDescription } from "./lib/improve-description"
 import { runLoop } from "./lib/run-loop"
@@ -334,10 +337,21 @@ export async function maybeAutoRefreshPluginCache(
 const activeServers: Map<string, { stop: () => Promise<void>; url: string }> = new Map()
 
 // ---------------------------------------------------------------------------
-// Plugin export
+// Shared startup + tool registry
+//
+// One tool definition per tool, declared with the V1 zod shape. The V2
+// entrypoint derives its JSON Schema from the same shape, so schemas and
+// execution bodies each exist exactly once.
 // ---------------------------------------------------------------------------
 
-export const SkillCreatorPlugin: Plugin = async (ctx) => {
+// OpenCode calls exactly one entrypoint per process (V1 `server()` or V2
+// `setup()`); the guard keeps accidental double initialization free.
+let initialized = false
+
+async function initialize(): Promise<void> {
+  if (initialized) return
+  initialized = true
+
   // Auto-install bundled skill files to ~/.config/opencode/skills/opencode-skill-creator/
   ensureBundledSkillInstalled({
     bundledSkillDir: BUNDLED_SKILL_DIR,
@@ -346,7 +360,29 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
     onError: (message, error) => console.warn(message, error),
   })
   void maybeAutoRefreshPluginCache()
+}
 
+// The eval conflict guard needs to enumerate installed skills. V1 uses
+// `opencode debug skill`; V2 overrides this with `ctx.skill.list` during setup.
+let activeSkillEnumerator: SkillEnumerator = cliInstalledSkillEnumerator
+
+/**
+ * Convert a V1 zod arg shape into the JSON Schema that the V2 `editor.add`
+ * expects. Zod 4 (bundled by @opencode-ai/plugin) provides `toJSONSchema`; the
+ * `$schema` dialect key is dropped so the stored tool matches the
+ * `ToolInfo.input` JSON Schema shape.
+ */
+function deriveJsonSchema(args: unknown): unknown {
+  const schema = tool.schema as unknown as {
+    object(shape: unknown): unknown
+    toJSONSchema(value: unknown): Record<string, unknown>
+  }
+  const jsonSchema = schema.toJSONSchema(schema.object(args ?? {}))
+  const { $schema: _dialect, ...rest } = jsonSchema
+  return rest
+}
+
+function buildPluginTools() {
   return {
     tool: {
       // ---------------------------------------------------------------
@@ -518,7 +554,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
 
           const meta = parseSkillMd(args.skillPath)
           const projectRoot = findProjectRoot()
-          await assertNoInstalledSkillConflict(meta.name, projectRoot)
+          await assertNoInstalledSkillConflict(meta.name, projectRoot, activeSkillEnumerator)
 
           const result = await runEval({
             evalSet,
@@ -660,7 +696,7 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           )
           const meta = parseSkillMd(args.skillPath)
           const projectRoot = findProjectRoot()
-          await assertNoInstalledSkillConflict(meta.name, projectRoot)
+          await assertNoInstalledSkillConflict(meta.name, projectRoot, activeSkillEnumerator)
 
           const result = await runLoop({
             evalSet,
@@ -937,4 +973,70 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
   }
 }
 
-export default SkillCreatorPlugin
+// V1 entrypoint: legacy OpenCode (>= 1.18.29) calls `server()` and expects the
+// hooks object. The `Plugin` type comes from @opencode-ai/plugin, which stays a
+// type-only, externalized import in the published bundle.
+export const SkillCreatorPlugin: Plugin = async () => {
+  await initialize()
+  return buildPluginTools()
+}
+
+// V2 entrypoint: OpenCode V2 reads the default export's `id` and `setup`.
+// Declared as a plain object so no runtime @opencode/plugin import is needed;
+// the `V2Plugin` type import is erased at build time.
+const v2Plugin: V2Plugin = {
+  id: "opencode-skill-creator",
+  async setup(ctx) {
+    await initialize()
+
+    // Enumerate installed skills through the V2 skill API so the eval
+    // conflict guard works on V2, where `opencode debug skill` no longer
+    // exists. Returning null (API failure) makes the guard fail loudly.
+    activeSkillEnumerator = createV2SkillEnumerator(ctx)
+
+    const tools = buildPluginTools().tool
+
+    await ctx.tool.transform((editor) => {
+      for (const [name, definition] of Object.entries(
+        tools as Record<string, ToolDefinition>,
+      )) {
+        editor.add({
+          name,
+          description: definition.description,
+          input: deriveJsonSchema(definition.args),
+          async execute(raw: unknown) {
+            return {
+              content: await definition.execute(raw as never, {} as never),
+            }
+          },
+        })
+      }
+    })
+
+    // Hook/transform registrations are disposed by OpenCode; the review
+    // servers are process-level resources started by the tools.
+    return async () => {
+      const servers = [...activeServers.values()]
+      activeServers.clear()
+      await Promise.all(
+        servers.map(async (server) => {
+          try {
+            await server.stop()
+          } catch {
+            // Best-effort cleanup while the plugin is shutting down.
+          }
+        }),
+      )
+    }
+  },
+}
+
+export default {
+  ...v2Plugin,
+  // V1 (>= 1.18.29) calls `server()`; the function export remains for older
+  // releases that imported the named `SkillCreatorPlugin`.
+  async server() {
+    return SkillCreatorPlugin({} as never)
+  },
+}
+

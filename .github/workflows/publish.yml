@@ -37,7 +37,7 @@ jobs:
 
       - name: Install plugin dependencies
         working-directory: plugin
-        run: npm install
+        run: npm ci
 
       - name: Resolve release version
         id: version
@@ -71,7 +71,9 @@ jobs:
             VERSION=$(node -p 'require("./package.json").version')
             popd >/dev/null
 
-            git add plugin/package.json
+            # Stage the lockfile too: `npm ci` on the next run requires
+            # package.json and package-lock.json to agree.
+            git add plugin/package.json plugin/package-lock.json
             git commit -m "chore(release): bump version to v${VERSION} [skip ci]"
             git push origin "HEAD:${GITHUB_REF_NAME}"
             TAG="v${VERSION}"
