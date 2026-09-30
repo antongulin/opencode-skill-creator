@@ -869,6 +869,10 @@ function buildPluginTools(instance: PluginInstance) {
             .boolean()
             .optional()
             .describe("Allow launching review even if with_skill/baseline run pairs are incomplete (default: false)"),
+          openBrowser: tool.schema
+            .boolean()
+            .optional()
+            .describe("Open the review URL in the default browser (default: true for interactive use). Automated callers should pass false or set OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0."),
         },
         async execute(args) {
           const prep = prepareReviewLaunch(args)
@@ -889,7 +893,8 @@ function buildPluginTools(instance: PluginInstance) {
             previousWorkspace: args.previousWorkspace ?? null,
             benchmarkPath: prep.benchmarkPath,
             templatePath,
-            openBrowser: true,
+            // Interactive default; automated/library callers opt out.
+            openBrowser: args.openBrowser ?? true,
           })
 
           instance.servers.set(args.workspace, { stop, url })

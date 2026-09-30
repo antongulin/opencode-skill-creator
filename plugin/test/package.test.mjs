@@ -20,11 +20,14 @@ import { createServer } from "node:http"
 import test from "node:test"
 
 // Process-wide test isolation. `setup()`/`server()` run process startup side
-// effects once per module load; force those to stay off the network and off the
-// developer's real cache regardless of test order. `withPrivateHome` redirects
-// the config/HOME writes per call.
+// effects once per module load; force those to stay off the network, off the
+// developer's real cache, and away from the developer's browser. `withPrivateHome`
+// redirects the config/HOME writes per call.
 const ISOLATION_ROOT = mkdtempSync(join(tmpdir(), "osc-isolation-"))
 process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE = "0"
+// Never auto-open a browser from automated tests, even if a test forgets to
+// pass openBrowser: false.
+process.env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER = "0"
 process.env.XDG_CACHE_HOME = join(ISOLATION_ROOT, "cache")
 process.on("exit", () => {
   rmSync(ISOLATION_ROOT, { recursive: true, force: true })
@@ -399,7 +402,7 @@ test("two V2 locations keep independent enumerators, roots and review servers", 
 
   const serveA = addedA.find((tool) => tool.name === "skill_serve_review")
   const startedA = JSON.parse(
-    (await serveA.execute({ workspace, port: 0, skillName: "owned-by-a", allowPartial: true }))
+    (await serveA.execute({ workspace, port: 0, skillName: "owned-by-a", allowPartial: true, openBrowser: false }))
       .content,
   )
 
@@ -462,6 +465,7 @@ test("V2 setup cleanup stops active review servers", async () => {
       port: 0,
       skillName: "cleanup-skill",
       allowPartial: true,
+      openBrowser: false,
     })
     const result = JSON.parse(response.content)
 
@@ -520,6 +524,7 @@ test("compiled review server runs in Node without a Bun runtime global", async (
         skillName: "test-skill",
         benchmarkPath,
         allowPartial: true,
+        openBrowser: false,
       }),
     )
 
@@ -606,6 +611,7 @@ test("compiled review server stop closes active browser connections", async () =
         port: 0,
         skillName: "test-skill",
         allowPartial: true,
+        openBrowser: false,
       }),
     )
     const url = new URL(result.url)
@@ -756,6 +762,7 @@ test("review server refuses to steal a busy port and leaves the other listener a
         port,
         skillName: "port-guard",
         allowPartial: true,
+        openBrowser: false,
       }),
       /already in use/,
     )
@@ -857,7 +864,7 @@ test("review preflight rejects an incomplete workspace unless allowPartial is se
 
     const serve = added.find((tool) => tool.name === "skill_serve_review")
     await assert.rejects(
-      serve.execute({ workspace, port: 0, skillName: "preflight", allowPartial: false }),
+      serve.execute({ workspace, port: 0, skillName: "preflight", allowPartial: false, openBrowser: false }),
       /Strict review preflight failed/,
     )
 
@@ -867,6 +874,7 @@ test("review preflight rejects an incomplete workspace unless allowPartial is se
       port: 0,
       skillName: "preflight",
       allowPartial: true,
+      openBrowser: false,
     })
     const result = JSON.parse(response.content)
     assert.equal(result.workflowGuard.allowPartial, true)

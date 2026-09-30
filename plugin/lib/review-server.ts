@@ -614,7 +614,31 @@ export interface ServeReviewOptions {
   previousWorkspace?: string | null
   benchmarkPath?: string | null
   templatePath: string
+  /**
+   * Open the review URL in the default browser. Defaults to true for the
+   * interactive `skill_serve_review` tool. Set false (or
+   * `OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0`) for automated/library callers so
+   * tests never launch the user's browser.
+   */
   openBrowser?: boolean
+  /** Test seam: override the browser launcher (defaults to `spawn("open", …)`). */
+  openBrowserImpl?: (url: string) => void
+}
+
+/** Disable automatic browser opening via the environment. */
+export function browserOpenDisabledByEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const value = env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER
+  return value === "0" || value === "false"
+}
+
+function defaultOpenBrowser(url: string): void {
+  const openProc = spawn("open", [url], {
+    detached: true,
+    stdio: "ignore",
+  })
+  openProc.unref()
 }
 
 /**
@@ -637,6 +661,7 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
     benchmarkPath,
     templatePath,
     openBrowser = true,
+    openBrowserImpl = defaultOpenBrowser,
   } = opts
 
   if (!existsSync(workspace) || !statSync(workspace).isDirectory()) {
@@ -681,14 +706,13 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
   const actualPort = (address as AddressInfo).port
   const serverUrl = `http://localhost:${actualPort}`
 
-  if (openBrowser) {
-    // Open browser (best-effort, non-blocking)
+  // Open the browser only for interactive use. Automated callers disable it
+  // via `openBrowser: false` or OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0.
+  if (openBrowser && !browserOpenDisabledByEnv()) {
+    // Best-effort, non-blocking; never fail the server because a launcher is
+    // missing (e.g. a headless environment).
     try {
-      const openProc = spawn("open", [serverUrl], {
-        detached: true,
-        stdio: "ignore",
-      })
-      openProc.unref()
+      openBrowserImpl(serverUrl)
     } catch {
       /* ignore — headless environment */
     }

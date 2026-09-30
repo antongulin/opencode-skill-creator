@@ -83,6 +83,22 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
+### Automated tests must not open the browser
+
+- Automated tests, library use, and tool-based QA must never launch the user's
+  default browser. Pass `openBrowser: false` to `serveReview`/`skill_serve_review`
+  and/or set `OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0` in the test process.
+- The interactive `skill_serve_review` default stays `openBrowser: true` for the
+  user-facing flow. Never flip that default for tests by editing the tool; opt out
+  per call or via the environment.
+- Every test must tear down the listeners/servers/processes/temp resources it
+  creates in a `finally` block (stop review servers, close any sockets, remove temp dirs).
+- Interactive QA uses exactly one Ego TaskSpace and reuses one page/tab per task;
+  close only the pages the task created when it completes.
+- Workers explicitly report their cleanup in the handoff (listeners, processes,
+  temp dirs, browser pages). A worker that opened a browser page closes it before
+  finishing; the lead verifies.
+
 ## Child DOX Index
 
 The root `AGENTS.md` owns cross-cutting repository rules. No child `AGENTS.md` files exist;

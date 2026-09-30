@@ -2138,6 +2138,17 @@ function closeServer(server, sockets) {
     });
   });
 }
+function browserOpenDisabledByEnv(env = process.env) {
+  const value = env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER;
+  return value === "0" || value === "false";
+}
+function defaultOpenBrowser(url) {
+  const openProc = spawn2("open", [url], {
+    detached: true,
+    stdio: "ignore"
+  });
+  openProc.unref();
+}
 async function serveReview(opts) {
   const {
     workspace,
@@ -2146,7 +2157,8 @@ async function serveReview(opts) {
     previousWorkspace,
     benchmarkPath,
     templatePath,
-    openBrowser = true
+    openBrowser = true,
+    openBrowserImpl = defaultOpenBrowser
   } = opts;
   if (!existsSync4(workspace) || !statSync2(workspace).isDirectory()) {
     throw new Error(`Workspace is not a directory: ${workspace}`);
@@ -2182,13 +2194,9 @@ async function serveReview(opts) {
   }
   const actualPort = address.port;
   const serverUrl = `http://localhost:${actualPort}`;
-  if (openBrowser) {
+  if (openBrowser && !browserOpenDisabledByEnv()) {
     try {
-      const openProc = spawn2("open", [serverUrl], {
-        detached: true,
-        stdio: "ignore"
-      });
-      openProc.unref();
+      openBrowserImpl(serverUrl);
     } catch {}
   }
   return {
@@ -2934,7 +2942,8 @@ function buildPluginTools(instance) {
           skillName: tool.schema.string().optional().describe("Skill name for the viewer header"),
           previousWorkspace: tool.schema.string().optional().describe("Path to previous iteration's workspace (for showing old outputs and feedback)"),
           benchmarkPath: tool.schema.string().optional().describe("Path to benchmark.json for the Benchmark tab"),
-          allowPartial: tool.schema.boolean().optional().describe("Allow launching review even if with_skill/baseline run pairs are incomplete (default: false)")
+          allowPartial: tool.schema.boolean().optional().describe("Allow launching review even if with_skill/baseline run pairs are incomplete (default: false)"),
+          openBrowser: tool.schema.boolean().optional().describe("Open the review URL in the default browser (default: true for interactive use). Automated callers should pass false or set OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0.")
         },
         async execute(args) {
           const prep = prepareReviewLaunch(args);
@@ -2951,7 +2960,7 @@ function buildPluginTools(instance) {
             previousWorkspace: args.previousWorkspace ?? null,
             benchmarkPath: prep.benchmarkPath,
             templatePath,
-            openBrowser: true
+            openBrowser: args.openBrowser ?? true
           });
           instance.servers.set(args.workspace, { stop, url });
           return JSON.stringify({
