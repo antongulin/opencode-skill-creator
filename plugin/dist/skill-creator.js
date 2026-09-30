@@ -367,9 +367,11 @@ async function assertNoInstalledSkillConflict(skillName, projectRoot, enumerate 
   throw new Error(skillConflictMessage(skillName, locations));
 }
 function createV2SkillEnumerator(ctx) {
-  return async () => {
+  return async (projectRoot) => {
     try {
-      const output = await ctx.skill.list();
+      const output = await ctx.skill.list({
+        location: { directory: projectRoot }
+      });
       if (!output || !Array.isArray(output.data))
         return null;
       return output.data.flatMap((entry) => {
@@ -2672,7 +2674,14 @@ async function maybeAutoRefreshPluginCache(options = {}) {
     return { checked: false, cleared: false, reason: "error" };
   }
 }
-var activeServers = new Map;
+function createPluginInstance(overrides = {}) {
+  return {
+    projectRoot: () => findProjectRoot(),
+    enumerate: cliInstalledSkillEnumerator,
+    servers: new Map,
+    ...overrides
+  };
+}
 var initialized = false;
 async function initialize() {
   if (initialized)
@@ -2686,14 +2695,13 @@ async function initialize() {
   });
   maybeAutoRefreshPluginCache();
 }
-var activeSkillEnumerator = cliInstalledSkillEnumerator;
 function deriveJsonSchema(args) {
   const schema = tool.schema;
   const jsonSchema = schema.toJSONSchema(schema.object(args ?? {}));
   const { $schema: _dialect, ...rest } = jsonSchema;
   return rest;
 }
-function buildPluginTools() {
+function buildPluginTools(instance) {
   return {
     tool: {
       skill_validate: tool({
@@ -2786,8 +2794,8 @@ function buildPluginTools() {
             throw new Error(`Invalid skill at ${args.skillPath}: ${validation.message}`);
           }
           const meta = parseSkillMd(args.skillPath);
-          const projectRoot = findProjectRoot();
-          await assertNoInstalledSkillConflict(meta.name, projectRoot, activeSkillEnumerator);
+          const projectRoot = instance.projectRoot();
+          await assertNoInstalledSkillConflict(meta.name, projectRoot, instance.enumerate);
           const result = await runEval({
             evalSet,
             skillName: meta.name,
@@ -2854,8 +2862,8 @@ function buildPluginTools() {
           const { readFileSync } = await import("fs");
           const evalSet = JSON.parse(readFileSync(args.evalSetPath, "utf-8"));
           const meta = parseSkillMd(args.skillPath);
-          const projectRoot = findProjectRoot();
-          await assertNoInstalledSkillConflict(meta.name, projectRoot, activeSkillEnumerator);
+          const projectRoot = instance.projectRoot();
+          await assertNoInstalledSkillConflict(meta.name, projectRoot, instance.enumerate);
           const result = await runLoop({
             evalSet,
             skillPath: args.skillPath,
@@ -2930,10 +2938,10 @@ function buildPluginTools() {
         },
         async execute(args) {
           const prep = prepareReviewLaunch(args);
-          const existing = activeServers.get(args.workspace);
+          const existing = instance.servers.get(args.workspace);
           if (existing) {
             await existing.stop();
-            activeServers.delete(args.workspace);
+            instance.servers.delete(args.workspace);
           }
           const templatePath = join10(TEMPLATES_DIR, "viewer.html");
           const { server, url, feedbackPath, stop } = await serveReview({
@@ -2945,7 +2953,7 @@ function buildPluginTools() {
             templatePath,
             openBrowser: true
           });
-          activeServers.set(args.workspace, { stop, url });
+          instance.servers.set(args.workspace, { stop, url });
           return JSON.stringify({
             url,
             feedbackPath,
@@ -2968,20 +2976,20 @@ function buildPluginTools() {
         },
         async execute(args) {
           if (args.workspace) {
-            const srv = activeServers.get(args.workspace);
+            const srv = instance.servers.get(args.workspace);
             if (srv) {
               await srv.stop();
-              activeServers.delete(args.workspace);
+              instance.servers.delete(args.workspace);
               return JSON.stringify({ stopped: args.workspace });
             }
             return JSON.stringify({ error: "No server running for this workspace" });
           }
           const stopped = [];
-          for (const [ws, srv] of activeServers) {
+          for (const [ws, srv] of instance.servers) {
             await srv.stop();
             stopped.push(ws);
           }
-          activeServers.clear();
+          instance.servers.clear();
           return JSON.stringify({ stopped });
         }
       }),
@@ -3025,14 +3033,21 @@ function buildPluginTools() {
 }
 var SkillCreatorPlugin = async () => {
   await initialize();
-  return buildPluginTools();
+  return buildPluginTools(createPluginInstance());
 };
 var v2Plugin = {
   id: "opencode-skill-creator",
   async setup(ctx) {
     await initialize();
-    activeSkillEnumerator = createV2SkillEnumerator(ctx);
-    const tools = buildPluginTools().tool;
+    const locationDirectory = ctx.location?.directory;
+    if (typeof locationDirectory !== "string" || !locationDirectory) {
+      throw new Error("opencode-skill-creator: setup() received no ctx.location.directory; cannot resolve the project root for skill evaluation.");
+    }
+    const instance = createPluginInstance({
+      projectRoot: () => findProjectRoot(locationDirectory),
+      enumerate: createV2SkillEnumerator(ctx)
+    });
+    const tools = buildPluginTools(instance).tool;
     await ctx.tool.transform((editor) => {
       for (const [name, definition] of Object.entries(tools)) {
         editor.add({
@@ -3048,8 +3063,8 @@ var v2Plugin = {
       }
     });
     return async () => {
-      const servers = [...activeServers.values()];
-      activeServers.clear();
+      const servers = [...instance.servers.values()];
+      instance.servers.clear();
       await Promise.all(servers.map(async (server) => {
         try {
           await server.stop();

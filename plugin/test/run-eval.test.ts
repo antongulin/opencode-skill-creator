@@ -8,6 +8,8 @@ import {
   readlinkSync,
   rmSync,
   writeFileSync,
+  readFileSync,
+  realpathSync,
 } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
@@ -175,23 +177,28 @@ test("findSkillConflictsInList reports unknown location when a match has none", 
 // D-02: the V2 ctx.skill.list -> enumerator mapping is exercised directly.
 // ---------------------------------------------------------------------------
 
-test("createV2SkillEnumerator maps ctx.skill.list data to name/location", async () => {
+test("createV2SkillEnumerator scopes the request to the project root", async () => {
+  const calls: unknown[] = []
   const enumerate = createV2SkillEnumerator({
     skill: {
-      list: async () => ({
-        data: [
-          { id: "a", name: "alpha", path: "/skills/alpha" },
-          { id: "b", name: "beta" },
-          { id: "c" }, // no name -> dropped
-        ],
-      }),
+      list: async (input) => {
+        calls.push(input)
+        return {
+          data: [
+            { id: "a", name: "alpha", path: "/skills/alpha" },
+            { id: "b", name: "beta" },
+            { id: "c" }, // no name -> dropped
+          ],
+        }
+      },
     },
   })
 
-  expect(await enumerate("/project")).toEqual([
+  expect(await enumerate("/project/location")).toEqual([
     { name: "alpha", location: "/skills/alpha" },
     { name: "beta", location: undefined },
   ])
+  expect(calls).toEqual([{ location: { directory: "/project/location" } }])
 })
 
 test("createV2SkillEnumerator returns null when the skill API fails", async () => {
@@ -215,38 +222,31 @@ test("createV2SkillEnumerator returns null for an unexpected shape", async () =>
 })
 
 // ---------------------------------------------------------------------------
-// C-03: a captured real v2 event stream fixture drives the parser, so a change
-// in the current `opencode run --format json` envelope is caught offline.
+// C-03: the captured real v2 event stream is fed through the actual runEval
+// subprocess harness (not a re-implementation of the parser), so a real
+// envelope change is caught against observable behavior.
 // ---------------------------------------------------------------------------
 
-test("parse matches the captured real v2 tool_use envelope", () => {
-  // Captured 2026-09-30 from `opencode run --standalone --format json` v2.0.19.
-  const fixture = JSON.stringify({
-    type: "tool_use",
-    timestamp: 1790804495430,
+// Captured 2026-09-30 from `opencode run --standalone --format json` v2.0.19.
+const CAPTURED_TOOL_USE_EVENT = {
+  type: "tool_use",
+  timestamp: 1790804495430,
+  sessionID: "ses_fixture",
+  part: {
+    partID: "prt_fixture",
     sessionID: "ses_fixture",
-    part: {
-      partID: "prt_fixture",
-      sessionID: "ses_fixture",
-      messageID: "msg_fixture",
-      type: "tool",
-      id: "call_fixture",
-      tool: "read",
-      state: {
-        status: "completed",
-        input: { path: "demo-skill-skill-abc123/SKILL.md" },
-        output: "Read file",
-        title: "read",
-      },
+    messageID: "msg_fixture",
+    type: "tool",
+    id: "call_fixture",
+    tool: "read",
+    state: {
+      status: "completed",
+      input: { path: "{skill}/SKILL.md" },
+      output: "Read file data.txt, lines 1-1",
+      title: "read",
     },
-  })
-
-  // Mirrors runSingleQuery's consumeLine detection for the synthetic name.
-  const event = JSON.parse(fixture)
-  expect(event.type).toBe("tool_use")
-  expect(["skill", "read"]).toContain(event.part.tool)
-  expect(JSON.stringify(event.part)).toContain("demo-skill-skill-abc123")
-})
+  },
+}
 
 // ---------------------------------------------------------------------------
 // runEval subprocess harness (C-01/C-02): a scripted fake `opencode` on PATH.
@@ -270,7 +270,12 @@ function makeEvalHarness(): EvalHarness {
 
   // Fake `opencode`: emits the JSON lines listed in the scenario file, then
   // exits with the configured code. `{skill}` is replaced with the synthetic
-  // skill name found in the cwd.
+  // skill name found in the cwd. Optional scenario fields:
+  //   argvFile  - path to write process.argv.slice(2) for flag assertions
+  //   envFile   - path to write cwd + PWD for isolation assertions
+  //   chunkSize - split the whole payload into chunks of this byte size,
+  //               forcing buffer reassembly across chunk boundaries
+  //   noFinalNewline - omit the trailing newline so the final-buffer path runs
   const fake = `#!/usr/bin/env node
 const fs = require("fs")
 const path = require("path")
@@ -281,12 +286,28 @@ try {
   const skills = fs.readdirSync(path.join(cwd, ".opencode", "skills"))
   if (skills.length) cleanName = skills[0]
 } catch {}
-const emit = (line) => process.stdout.write(line.split("{skill}").join(cleanName) + "\\n")
-if (Array.isArray(scenario.lines)) scenario.lines.forEach(emit)
-if (scenario.sleepMs) {
-  setTimeout(() => process.exit(scenario.exitCode ?? 0), scenario.sleepMs)
+if (scenario.argvFile) fs.writeFileSync(scenario.argvFile, JSON.stringify(process.argv.slice(2)))
+if (scenario.envFile) fs.writeFileSync(scenario.envFile, JSON.stringify({ cwd: fs.realpathSync(cwd), pwd: process.env.PWD ? fs.realpathSync(process.env.PWD) : null }))
+const lines = Array.isArray(scenario.lines) ? scenario.lines : []
+const payload = lines.map((line) => line.split("{skill}").join(cleanName) + "\\n").join("")
+const finish = () => {
+  if (scenario.sleepMs) setTimeout(() => process.exit(scenario.exitCode ?? 0), scenario.sleepMs)
+  else process.exit(scenario.exitCode ?? 0)
+}
+if (scenario.chunkSize) {
+  let offset = 0
+  const writeNext = () => {
+    if (offset >= payload.length) return finish()
+    process.stdout.write(payload.slice(offset, offset + scenario.chunkSize))
+    offset += scenario.chunkSize
+    setImmediate(writeNext)
+  }
+  writeNext()
+} else if (payload) {
+  process.stdout.write(scenario.noFinalNewline ? payload.replace(/\\n$/, "") : payload)
+  finish()
 } else {
-  process.exit(scenario.exitCode ?? 0)
+  finish()
 }
 `
   const fakePath = join(binDir, "opencode")
@@ -314,7 +335,14 @@ function triggerLine(tool = "read"): string {
 async function runEvalWithScenario(
   harness: EvalHarness,
   scenario: Record<string, unknown>,
-  opts: { evalSet: { query: string; should_trigger: boolean }[]; runsPerQuery?: number; timeout?: number; numWorkers?: number },
+  opts: {
+    evalSet: { query: string; should_trigger: boolean }[]
+    runsPerQuery?: number
+    timeout?: number
+    numWorkers?: number
+    model?: string
+    agent?: string
+  },
 ) {
   writeFileSync(harness.scenarioPath, JSON.stringify(scenario))
   const previousPath = process.env.PATH
@@ -330,6 +358,8 @@ async function runEvalWithScenario(
       timeout: opts.timeout ?? 10,
       projectRoot: harness.projectRoot,
       runsPerQuery: opts.runsPerQuery ?? 1,
+      model: opts.model,
+      agent: opts.agent,
     })
   } finally {
     if (previousPath === undefined) delete process.env.PATH
@@ -339,12 +369,19 @@ async function runEvalWithScenario(
   }
 }
 
-test("runEval detects a trigger from a real v2 tool_use JSON line", async () => {
+test("runEval detects a trigger from the captured real v2 tool_use event", async () => {
   const harness = makeEvalHarness()
   try {
+    // The captured event is passed unchanged through the real subprocess parser.
     const output = await runEvalWithScenario(
       harness,
-      { lines: [JSON.stringify({ type: "step_start" }), triggerLine("read")], exitCode: 0 },
+      {
+        lines: [
+          JSON.stringify({ type: "step_start" }),
+          JSON.stringify(CAPTURED_TOOL_USE_EVENT),
+        ],
+        exitCode: 0,
+      },
       { evalSet: [{ query: "trigger me", should_trigger: true }] },
     )
 
@@ -352,6 +389,86 @@ test("runEval detects a trigger from a real v2 tool_use JSON line", async () => 
     expect(output.results[0].triggers).toBe(1)
     expect(output.results[0].trigger_rate).toBe(1)
     expect(output.results[0].pass).toBe(true)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test("runEval detects a trigger when the stream is split across chunk boundaries", async () => {
+  const harness = makeEvalHarness()
+  try {
+    const output = await runEvalWithScenario(
+      harness,
+      {
+        lines: [JSON.stringify(CAPTURED_TOOL_USE_EVENT)],
+        chunkSize: 7,
+        exitCode: 0,
+      },
+      { evalSet: [{ query: "chunked", should_trigger: true }] },
+    )
+
+    expect(output.results[0].triggers).toBe(1)
+    expect(output.results[0].errors).toBe(0)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test("runEval detects a trigger when the final event has no trailing newline", async () => {
+  const harness = makeEvalHarness()
+  try {
+    const output = await runEvalWithScenario(
+      harness,
+      {
+        lines: [JSON.stringify(CAPTURED_TOOL_USE_EVENT)],
+        noFinalNewline: true,
+        exitCode: 0,
+      },
+      { evalSet: [{ query: "final buffer", should_trigger: true }] },
+    )
+
+    expect(output.results[0].triggers).toBe(1)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test("runEval passes agent/model flags and isolates the child PWD to the eval root", async () => {
+  const harness = makeEvalHarness()
+  const argvFile = join(harness.root, "argv.json")
+  const envFile = join(harness.root, "env.json")
+  try {
+    await runEvalWithScenario(
+      harness,
+      { lines: [triggerLine("read")], argvFile, envFile, exitCode: 0 },
+      {
+        evalSet: [{ query: "flags", should_trigger: true }],
+        agent: "custom-agent",
+        model: "ollama-cloud/deepseek-v4.1-flash",
+      },
+    )
+
+    const argv = JSON.parse(readFileSync(argvFile, "utf-8"))
+    expect(argv).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--agent",
+      "custom-agent",
+      "--model",
+      "ollama-cloud/deepseek-v4.1-flash",
+      "flags",
+    ])
+
+    // The child must not inherit the caller's PWD: the nested run resolves
+    // project skills from PWD, so leaking it reintroduces the false-0 bug.
+    // The fake records already-resolved paths (the eval root is removed on
+    // cleanup, so the test must not re-resolve them).
+    const env = JSON.parse(readFileSync(envFile, "utf-8"))
+    expect(env.pwd).toBe(env.cwd)
+    expect(env.cwd.startsWith(realpathSync(tmpdir()))).toBe(true)
+    // The eval root is isolated, not the real project under test.
+    expect(env.cwd).not.toBe(realpathSync(harness.projectRoot))
   } finally {
     harness.cleanup()
   }

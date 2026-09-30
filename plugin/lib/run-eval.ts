@@ -207,15 +207,21 @@ export async function assertNoInstalledSkillConflict(
 }
 
 /**
- * Build the V2 skill enumerator from `ctx.skill.list()`. Returning null on any
- * failure lets the conflict guard abort loudly rather than silently skipping.
+ * Build the V2 skill enumerator from `ctx.skill.list()`. The enumerator scopes
+ * enumeration to the project root passed by the caller, so each plugin instance
+ * reads the skills for its own location. Returning null on any failure lets the
+ * conflict guard abort loudly rather than silently skipping.
  */
 export function createV2SkillEnumerator(ctx: {
-  skill: { list(input?: unknown): Promise<unknown> }
+  skill: {
+    list(input?: { location?: { directory?: string } }): Promise<unknown>
+  }
 }): SkillEnumerator {
-  return async () => {
+  return async (projectRoot: string) => {
     try {
-      const output = (await ctx.skill.list()) as {
+      const output = (await ctx.skill.list({
+        location: { directory: projectRoot },
+      })) as {
         data?: readonly { name?: unknown; path?: unknown }[]
       }
       if (!output || !Array.isArray(output.data)) return null

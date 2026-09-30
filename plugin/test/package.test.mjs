@@ -12,12 +12,23 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
+import { tmpdir, homedir } from "node:os"
 import { join, relative } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:http"
 import test from "node:test"
+
+// Process-wide test isolation. `setup()`/`server()` run process startup side
+// effects once per module load; force those to stay off the network and off the
+// developer's real cache regardless of test order. `withPrivateHome` redirects
+// the config/HOME writes per call.
+const ISOLATION_ROOT = mkdtempSync(join(tmpdir(), "osc-isolation-"))
+process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE = "0"
+process.env.XDG_CACHE_HOME = join(ISOLATION_ROOT, "cache")
+process.on("exit", () => {
+  rmSync(ISOLATION_ROOT, { recursive: true, force: true })
+})
 
 const pluginSourcePath = fileURLToPath(new URL("../skill-creator.ts", import.meta.url))
 const runtimeEntryPath = fileURLToPath(new URL("../runtime-entry.ts", import.meta.url))
@@ -106,13 +117,87 @@ test("compiled entrypoint only exposes plugin entrypoints for OpenCode loaders",
   assert.equal(typeof mod.default.setup, "function")
 })
 
+test("setup() and server() never write the real user config", async () => {
+  // Snapshot the real home's opencode skill dir before running setup/server
+  // under a private HOME, then assert it is byte-for-byte unchanged.
+  const snapshotSkills = (root) => {
+    if (!existsSync(root)) return null
+    const hashes = {}
+    for (const entry of readdirSync(root, { recursive: true }).sort()) {
+      const full = join(root, entry)
+      if (statSync(full).isFile()) {
+        hashes[entry] = createHash("sha256").update(readFileSync(full)).digest("hex")
+      }
+    }
+    return hashes
+  }
+  const realSkills = join(homedir(), ".config", "opencode", "skills")
+  const before = snapshotSkills(realSkills)
+
+  const mod = await import(`${distEntryPath}?isolation=${Date.now()}`)
+  const added = []
+  await withPrivateHome(async () => {
+    await mod.default.setup(recordingCtx(added))
+  })
+  await withPrivateHome(async () => {
+    await mod.default.server({})
+  })
+
+  // The developer's real config must be untouched: the install target is
+  // derived from HOME/XDG_CONFIG_HOME, which withPrivateHome redirects.
+  assert.deepEqual(snapshotSkills(realSkills), before, "real ~/.config/opencode/skills must be untouched")
+  assert.equal(
+    added.some((tool) => tool.name === "skill_validate"),
+    true,
+    "setup still registered tools under the private home",
+  )
+})
+
 // V2 registers tools through `ctx.tool.transform`; record the added definitions
 // from a real setup() call. The recording ctx is a wiring double only — the
 // same surface is exercised against the real runtime in v2-runtime.test.mjs.
-async function collectV2Tools(skillListData = []) {
+//
+// `setup()` runs process startup side effects (bundled-skill install, auto
+// update). Every call MUST run under a private HOME/XDG so the test never
+// writes the developer's real `~/.config/opencode`. The helper sets and restores
+// that environment around the setup call.
+const HOME_KEYS = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "USERPROFILE", "OPENCODE_SKILL_CREATOR_AUTO_UPDATE"]
+
+function withPrivateHome(fn) {
+  const tempHome = mkdtempSync(join(tmpdir(), "osc-private-home-"))
+  const previous = {}
+  for (const key of HOME_KEYS) previous[key] = process.env[key]
+  process.env.HOME = tempHome
+  process.env.USERPROFILE = tempHome
+  process.env.XDG_CONFIG_HOME = join(tempHome, ".config")
+  process.env.XDG_CACHE_HOME = join(tempHome, ".cache")
+  // Disable the registry auto-update check: no network in unit tests.
+  process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE = "0"
+  const restore = () => {
+    for (const key of HOME_KEYS) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+    rmSync(tempHome, { recursive: true, force: true })
+  }
+  try {
+    const result = fn(tempHome)
+    if (result && typeof result.then === "function") {
+      return result.finally(restore)
+    }
+    restore()
+    return result
+  } catch (error) {
+    restore()
+    throw error
+  }
+}
+
+async function collectV2Tools(skillListData = [], locationDirectory = process.cwd()) {
   const mod = await import(pathToFileURL(distEntryPath).href)
   const added = []
   const ctx = {
+    location: { directory: locationDirectory },
     skill: { list: async () => ({ data: skillListData }) },
     tool: {
       transform: async (callback) => {
@@ -120,8 +205,30 @@ async function collectV2Tools(skillListData = []) {
       },
     },
   }
-  const cleanup = await mod.default.setup(ctx)
-  return { added, cleanup }
+  return withPrivateHome(async () => {
+    const cleanup = await mod.default.setup(ctx)
+    return { added, cleanup }
+  })
+}
+
+/** Run a V2/V1 setup under a private HOME/XDG and return the cleanup. */
+async function setupUnderPrivateHome(mod, ctx) {
+  return withPrivateHome(async () => {
+    const cleanup = await mod.default.setup(ctx)
+    return cleanup
+  })
+}
+
+function recordingCtx(added, { skillListData = [], locationDirectory = process.cwd() } = {}) {
+  return {
+    location: { directory: locationDirectory },
+    skill: { list: async () => ({ data: skillListData }) },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition) })
+      },
+    },
+  }
 }
 
 test("V2 setup registers the full public tool surface with JSON Schema input", async () => {
@@ -179,7 +286,7 @@ test("V2 setup registers the full public tool surface with JSON Schema input", a
 
 test("V1 server() hooks and V2 setup expose the same tool names and required args", async () => {
   const mod = await import(pathToFileURL(distEntryPath).href)
-  const hooks = await mod.default.server({})
+  const hooks = await withPrivateHome(() => mod.default.server({}))
   const v1Tools = hooks.tool
 
   const { added } = await collectV2Tools()
@@ -203,9 +310,113 @@ test("V1 server() hooks and V2 setup expose the same tool names and required arg
   }
 })
 
+test("V2 setup rejects a context without a location directory", async () => {
+  const mod = await import(pathToFileURL(distEntryPath).href)
+  const added = []
+  await assert.rejects(
+    setupUnderPrivateHome(mod, {
+      skill: { list: async () => ({ data: [] }) },
+      tool: {
+        transform: async (callback) => {
+          callback({ add: (definition) => added.push(definition) })
+        },
+      },
+    }),
+    /no ctx\.location\.directory/,
+  )
+})
+
+test("two V2 locations keep independent enumerators, roots and review servers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "osc-two-locations-"))
+  const locA = join(root, "a")
+  const locB = join(root, "b")
+  mkdirSync(join(locA, ".opencode"), { recursive: true })
+  mkdirSync(join(locB, ".opencode"), { recursive: true })
+
+  const writeSkill = (dir, name) => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, "SKILL.md"),
+      ["---", `name: ${name}`, "description: A fixture skill.", "---", "", "# Fixture", ""].join("\n"),
+    )
+  }
+  writeSkill(join(locA, "alpha"), "alpha")
+  writeSkill(join(locB, "alpha"), "alpha")
+  const evalSetA = join(root, "eval-a.json")
+  const evalSetB = join(root, "eval-b.json")
+  for (const path of [evalSetA, evalSetB]) {
+    writeFileSync(path, JSON.stringify([{ query: "use alpha", should_trigger: true }]))
+  }
+
+  // Each ctx records the skill-list input so we can prove the enumerator is
+  // scoped to its own instance's project root.
+  const makeCtx = (added, location) => ({
+    location: { directory: location },
+    skill: {
+      list: async (input) => {
+        const requested = input?.location?.directory
+        if (requested !== location) {
+          return { data: [{ name: "alpha", path: `${requested}/alpha` }] }
+        }
+        return { data: [{ name: "alpha", path: `${location}/alpha` }] }
+      },
+    },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition) })
+      },
+    },
+  })
+
+  const mod = await import(`${distEntryPath}?two-loc=${Date.now()}`)
+  const addedA = []
+  const addedB = []
+  const cleanupA = await setupUnderPrivateHome(mod, makeCtx(addedA, locA))
+  const cleanupB = await setupUnderPrivateHome(mod, makeCtx(addedB, locB))
+
+  const evalA = addedA.find((tool) => tool.name === "skill_eval")
+  const evalB = addedB.find((tool) => tool.name === "skill_eval")
+
+  // Each instance's skill_eval enumerates against its OWN location; the second
+  // setup() must not have overwritten the first instance's enumerator.
+  await assert.rejects(
+    evalA.execute({ evalSetPath: evalSetA, skillPath: join(locA, "alpha") }),
+    new RegExp(`${locA}/alpha`),
+  )
+  await assert.rejects(
+    evalB.execute({ evalSetPath: evalSetB, skillPath: join(locB, "alpha") }),
+    new RegExp(`${locB}/alpha`),
+  )
+
+  // Server ownership: A starts a review server; B's cleanup must not close it.
+  const workspace = join(root, "workspace")
+  mkdirSync(join(workspace, "eval-0", "with_skill", "outputs"), { recursive: true })
+  writeFileSync(
+    join(workspace, "eval-0", "eval_metadata.json"),
+    `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
+  )
+  writeFileSync(join(workspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
+
+  const serveA = addedA.find((tool) => tool.name === "skill_serve_review")
+  const startedA = JSON.parse(
+    (await serveA.execute({ workspace, port: 0, skillName: "owned-by-a", allowPartial: true }))
+      .content,
+  )
+
+  await cleanupB()
+
+  // A's server is still serving after B's cleanup.
+  assert.equal((await fetch(startedA.url)).status, 200, "B cleanup must not close A server")
+
+  await cleanupA()
+  await assert.rejects(fetch(startedA.url), "A cleanup closes A server")
+
+  rmSync(root, { recursive: true, force: true })
+})
+
 test("V1 and V2 tool execution return equivalent payloads", async () => {
   const mod = await import(pathToFileURL(distEntryPath).href)
-  const hooks = await mod.default.server({})
+  const hooks = await withPrivateHome(() => mod.default.server({}))
   const { added } = await collectV2Tools()
 
   const skillDir = mkdtempSync(join(tmpdir(), "osc-parity-skill-"))
@@ -229,7 +440,6 @@ test("V1 and V2 tool execution return equivalent payloads", async () => {
 test("V2 setup cleanup stops active review servers", async () => {
   const tempHome = mkdtempSync(join(tmpdir(), "osc-v2-cleanup-"))
   const workspace = join(tempHome, "workspace")
-  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
 
   try {
     mkdirSync(join(workspace, "eval-0", "with_skill", "outputs"), { recursive: true })
@@ -238,19 +448,13 @@ test("V2 setup cleanup stops active review servers", async () => {
       `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
     )
     writeFileSync(join(workspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
-    process.env.XDG_CONFIG_HOME = tempHome
 
     const mod = await import(`${distEntryPath}?v2-cleanup=${Date.now()}`)
     const added = []
-    const ctx = {
-      skill: { list: async () => ({ data: [] }) },
-      tool: {
-        transform: async (callback) => {
-          callback({ add: (definition) => added.push(definition) })
-        },
-      },
-    }
-    const cleanup = await mod.default.setup(ctx)
+    const cleanup = await setupUnderPrivateHome(
+      mod,
+      recordingCtx(added, { locationDirectory: workspace }),
+    )
 
     const serve = added.find((tool) => tool.name === "skill_serve_review")
     const response = await serve.execute({
@@ -268,11 +472,6 @@ test("V2 setup cleanup stops active review servers", async () => {
 
     await assert.rejects(fetch(result.url), "server should be closed after cleanup")
   } finally {
-    if (previousXdgConfigHome === undefined) {
-      delete process.env.XDG_CONFIG_HOME
-    } else {
-      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
-    }
     rmSync(tempHome, { recursive: true, force: true })
   }
 })
@@ -527,7 +726,6 @@ test("compiled entrypoint has no trailing whitespace", () => {
 test("review server refuses to steal a busy port and leaves the other listener alive", async () => {
   const tempHome = mkdtempSync(join(tmpdir(), "osc-port-guard-"))
   const workspace = join(tempHome, "workspace")
-  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
 
   // An unrelated process owns a port first.
   const blocker = createServer((_req, res) => res.end("blocker"))
@@ -546,19 +744,10 @@ test("review server refuses to steal a busy port and leaves the other listener a
       `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
     )
     writeFileSync(join(workspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
-    process.env.XDG_CONFIG_HOME = tempHome
 
     const mod = await import(`${distEntryPath}?port-guard=${Date.now()}`)
     const added = []
-    const ctx = {
-      skill: { list: async () => ({ data: [] }) },
-      tool: {
-        transform: async (callback) => {
-          callback({ add: (definition) => added.push(definition) })
-        },
-      },
-    }
-    await mod.default.setup(ctx)
+    await setupUnderPrivateHome(mod, recordingCtx(added, { locationDirectory: workspace }))
 
     const serve = added.find((tool) => tool.name === "skill_serve_review")
     await assert.rejects(
@@ -577,11 +766,6 @@ test("review server refuses to steal a busy port and leaves the other listener a
     assert.ok(blockerConnections > 0)
   } finally {
     await new Promise((resolve) => blocker.close(resolve))
-    if (previousXdgConfigHome === undefined) {
-      delete process.env.XDG_CONFIG_HOME
-    } else {
-      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
-    }
     rmSync(tempHome, { recursive: true, force: true })
   }
 })
@@ -662,24 +846,14 @@ test("build script uses the correct bun external flag form", () => {
 test("review preflight rejects an incomplete workspace unless allowPartial is set", async () => {
   const tempHome = mkdtempSync(join(tmpdir(), "osc-preflight-"))
   const workspace = join(tempHome, "workspace")
-  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
 
   try {
     // eval-0/with_skill exists, but no baseline run and no run-* outputs.
     mkdirSync(join(workspace, "eval-0", "with_skill"), { recursive: true })
-    process.env.XDG_CONFIG_HOME = tempHome
 
     const mod = await import(`${distEntryPath}?preflight=${Date.now()}`)
     const added = []
-    const ctx = {
-      skill: { list: async () => ({ data: [] }) },
-      tool: {
-        transform: async (callback) => {
-          callback({ add: (definition) => added.push(definition) })
-        },
-      },
-    }
-    await mod.default.setup(ctx)
+    await setupUnderPrivateHome(mod, recordingCtx(added, { locationDirectory: workspace }))
 
     const serve = added.find((tool) => tool.name === "skill_serve_review")
     await assert.rejects(
@@ -701,11 +875,6 @@ test("review preflight rejects an incomplete workspace unless allowPartial is se
     const stop = added.find((tool) => tool.name === "skill_stop_review")
     await stop.execute({ workspace })
   } finally {
-    if (previousXdgConfigHome === undefined) {
-      delete process.env.XDG_CONFIG_HOME
-    } else {
-      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
-    }
     rmSync(tempHome, { recursive: true, force: true })
   }
 })
