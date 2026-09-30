@@ -13,13 +13,35 @@ This is a faithful adaptation of Anthropic's official [skill-creator](https://gi
 | **V2** (current) | `plugins` | `id` + `setup()` | `@opencode/plugin` ^2.0.0 |
 | **V1** ≥ 1.18.29 | `plugin` | object `server()` | `@opencode-ai/plugin` ≥ 1.18.29 |
 
-The published package ships both entrypoints from one bundle, so the same install works on
-V2 and on the supported V1 floor. OpenCode V2 reads the `plugins` array; V1 reads `plugin`.
-The installer writes `plugins` and leaves an existing `plugin` array untouched.
+The published package ships both entrypoints from one bundle, so one npm package serves both
+runtimes. The **automatic installer targets OpenCode V2**: it writes only the `plugins` array
+and leaves any existing legacy `plugin` array untouched. OpenCode V2 reads `plugins`, while V1
+reads `plugin`, so on the supported V1 floor you add the plugin to `plugin` manually and
+restart OpenCode (see [Supported V1 setup (manual)](#supported-v1-setup-manual)).
 
 Older V1 releases (before 1.18.29) only accept a function default export, which this package
 no longer provides. Use an older package version or add a dedicated entrypoint if you must
 support them.
+
+### Supported V1 setup (manual)
+
+The installer does not configure V1. To use the supported V1 floor (>= 1.18.29), register the
+package under the singular `plugin` key yourself:
+
+1. Open (or create) `~/.config/opencode/opencode.json` (or the project `opencode.json`).
+2. Add the package to the `plugin` array (keep any existing entries):
+
+   ```json
+   {
+     "plugin": ["opencode-skill-creator"]
+   }
+   ```
+
+3. Restart OpenCode — the config is read at startup, so a running session will not pick up the
+   change until it restarts.
+
+Do not add the package to both `plugin` and `plugins`: V1 ignores `plugins`, and a mixed config
+can change which entries other plugins load.
 
 ## Install
 
@@ -54,8 +76,11 @@ npx opencode-skill-creator --about
 What this command does:
 
 1. Creates/updates `~/.config/opencode/opencode.json`
-2. Adds `"opencode-skill-creator"` to the `plugins` array (V2), leaving any legacy `plugin` array untouched
+2. Adds `"opencode-skill-creator"` to the `plugins` array (OpenCode V2), leaving any legacy `plugin` array untouched
 3. Leaves your existing plugins untouched
+
+The installer configures **OpenCode V2 only**. On the supported V1 floor, add the package to the
+singular `plugin` array yourself (see [Supported V1 setup (manual)](#supported-v1-setup-manual)).
 
 Then:
 

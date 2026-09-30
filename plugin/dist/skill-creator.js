@@ -2142,11 +2142,12 @@ function browserOpenDisabledByEnv(env = process.env) {
   const value = env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER;
   return value === "0" || value === "false";
 }
-function defaultOpenBrowser(url) {
+function defaultOpenBrowser(url, onError) {
   const openProc = spawn2("open", [url], {
     detached: true,
     stdio: "ignore"
   });
+  openProc.on("error", onError);
   openProc.unref();
 }
 async function serveReview(opts) {
@@ -2195,9 +2196,14 @@ async function serveReview(opts) {
   const actualPort = address.port;
   const serverUrl = `http://localhost:${actualPort}`;
   if (openBrowser && !browserOpenDisabledByEnv()) {
+    const reportOpenFailure = (error) => {
+      console.warn(`Could not open the review page automatically (${error.message}). ` + `Open it manually: ${serverUrl}`);
+    };
     try {
-      openBrowserImpl(serverUrl);
-    } catch {}
+      openBrowserImpl(serverUrl, reportOpenFailure);
+    } catch (error) {
+      reportOpenFailure(error instanceof Error ? error : new Error(String(error)));
+    }
   }
   return {
     server,

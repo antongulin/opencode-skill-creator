@@ -621,8 +621,12 @@ export interface ServeReviewOptions {
    * tests never launch the user's browser.
    */
   openBrowser?: boolean
-  /** Test seam: override the browser launcher (defaults to `spawn("open", …)`). */
-  openBrowserImpl?: (url: string) => void
+  /**
+   * Test seam: override the browser launcher (defaults to `spawn("open", …)`).
+   * The launcher must forward asynchronous failures (e.g. a missing binary) to
+   * `onError` so the review server can stay up and report the manual URL.
+   */
+  openBrowserImpl?: (url: string, onError: (error: Error) => void) => void
 }
 
 /** Disable automatic browser opening via the environment. */
@@ -633,11 +637,18 @@ export function browserOpenDisabledByEnv(
   return value === "0" || value === "false"
 }
 
-function defaultOpenBrowser(url: string): void {
+function defaultOpenBrowser(
+  url: string,
+  onError: (error: Error) => void,
+): void {
   const openProc = spawn("open", [url], {
     detached: true,
     stdio: "ignore",
   })
+  // A missing launcher (e.g. headless Linux) surfaces as an asynchronous
+  // 'error' event, which the caller's try/catch cannot catch. Handle it so an
+  // unhandled 'error' does not take the process down.
+  openProc.on("error", onError)
   openProc.unref()
 }
 
@@ -709,12 +720,19 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
   // Open the browser only for interactive use. Automated callers disable it
   // via `openBrowser: false` or OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0.
   if (openBrowser && !browserOpenDisabledByEnv()) {
-    // Best-effort, non-blocking; never fail the server because a launcher is
-    // missing (e.g. a headless environment).
+    // Best-effort and non-blocking. The try/catch covers synchronous throws;
+    // the `onError` callback covers asynchronous launcher failures (a missing
+    // binary) so the review server stays up and the manual URL remains usable.
+    const reportOpenFailure = (error: Error) => {
+      console.warn(
+        `Could not open the review page automatically (${error.message}). ` +
+          `Open it manually: ${serverUrl}`,
+      )
+    }
     try {
-      openBrowserImpl(serverUrl)
-    } catch {
-      /* ignore — headless environment */
+      openBrowserImpl(serverUrl, reportOpenFailure)
+    } catch (error) {
+      reportOpenFailure(error instanceof Error ? error : new Error(String(error)))
     }
   }
 
