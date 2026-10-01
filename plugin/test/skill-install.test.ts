@@ -754,6 +754,63 @@ test("P42-04R3: a bundle carrying a reserved root name under a case variant neve
   })
 })
 
+// ---------------------------------------------------------------------------
+// P42-04S2 correction: `files` must be a plain object of path->hash. An array
+// is malformed metadata: its numeric indices ("0", "1", ...) pass the
+// safe-relative-path check and would otherwise be treated as owned files,
+// letting a well-formed *hash-matching array* delete a genuine user file whose
+// name happens to be a number. Malformed metadata must prune nothing.
+// ---------------------------------------------------------------------------
+
+test("P42-04S2: an array manifest is malformed and cannot prune a numeric user file", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    // A legacy install: a user file literally named "0" plus a MALFORMED
+    // manifest whose `files` is an array holding the hash of that file.
+    mkdirSync(skillsDir, { recursive: true })
+    writeFileSync(join(skillsDir, "SKILL.md"), SKILL_MD(SKILL_NAME))
+    writeFileSync(join(skillsDir, "0"), "CUSTOM ZERO\n")
+    const hash = (s: string) => createHash("sha256").update(Buffer.from(s)).digest("hex")
+    writeFileSync(
+      join(skillsDir, INSTALL_MANIFEST_FILE),
+      JSON.stringify({ schema: 1, packageVersion: "old", files: [hash("CUSTOM ZERO\n")] }),
+    )
+    writeFileSync(join(skillsDir, INSTALL_VERSION_FILE), "old\n")
+
+    const bundle = writeBundle(root, "bundle", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "new" })
+
+    // Malformed metadata prunes nothing: the numeric user file survives byte-exact.
+    expect(existsSync(join(skillsDir, "0"))).toBe(true)
+    expect(readFileSync(join(skillsDir, "0"), "utf-8")).toBe("CUSTOM ZERO\n")
+    // The normal upgrade still completes and writes a plain-object inventory.
+    const rewritten = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(Array.isArray(rewritten.files)).toBe(false)
+    expect(typeof rewritten.files).toBe("object")
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe("new\n")
+  })
+})
+
+test("P42-04S2: a genuine object manifest with a numeric path is still owned and pruned", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    // v1 ships a plugin-owned file named "0"; it IS recorded (object inventory).
+    const v1 = writeBundle(root, "bundle-v1", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "0": "OWNED ZERO\n",
+    })
+    ensureBundledSkillInstalled({ bundledSkillDir: v1, configDir, packageVersion: "1.0.0" })
+    const manifest1 = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(manifest1.files["0"]).toBeTypeOf("string")
+
+    // v2 drops it; a genuine owned + unchanged dropped file is pruned.
+    const v2 = writeBundle(root, "bundle-v2", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: v2, configDir, packageVersion: "2.0.0" })
+    expect(existsSync(join(skillsDir, "0"))).toBe(false)  })
+})
+
 test("archiveLegacySkill disables legacy SKILL.md before moving the legacy directory", () => {
   const source = readFileSync(join(import.meta.dir, "..", "lib", "skill-install.ts"), "utf-8")
   const disableSkillIndex = source.indexOf(

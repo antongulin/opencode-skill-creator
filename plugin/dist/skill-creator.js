@@ -3698,7 +3698,7 @@ function readManifest(skillsDir) {
     if (record.schema !== 1)
       return null;
     const files = record.files;
-    if (!files || typeof files !== "object")
+    if (!files || typeof files !== "object" || Array.isArray(files))
       return null;
     const checked = {};
     for (const [rel, hash] of Object.entries(files)) {

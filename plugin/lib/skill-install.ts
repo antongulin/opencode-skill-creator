@@ -103,7 +103,9 @@ function isSafeRelativePath(rel: unknown): rel is string {
     .every((segment) => segment !== "" && segment !== "." && segment !== "..")
 }
 
-/** Read and validate the ownership manifest. Missing or malformed -> null. */
+/** Read and validate the ownership manifest. Missing or malformed -> null.
+ * `files` must be a plain object of path->hash; an array (whose numeric indices
+ * would otherwise pass as relative paths) is malformed and prunes nothing. */
 function readManifest(skillsDir: string): SkillInstallManifest | null {
   const manifestPath = join(skillsDir, INSTALL_MANIFEST_FILE)
   if (!existsSync(manifestPath)) return null
@@ -113,7 +115,7 @@ function readManifest(skillsDir: string): SkillInstallManifest | null {
     const record = parsed as Record<string, unknown>
     if (record.schema !== 1) return null
     const files = record.files
-    if (!files || typeof files !== "object") return null
+    if (!files || typeof files !== "object" || Array.isArray(files)) return null
     const checked: Record<string, string> = {}
     for (const [rel, hash] of Object.entries(files as Record<string, unknown>)) {
       if (!isSafeRelativePath(rel) || typeof hash !== "string") return null
