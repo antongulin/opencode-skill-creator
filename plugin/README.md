@@ -20,8 +20,8 @@ reads `plugin`, so on the supported V1 floor you add the plugin to `plugin` manu
 restart OpenCode (see [Supported V1 setup (manual)](#supported-v1-setup-manual)).
 
 Older V1 releases (before 1.18.29) only accept a function default export, which this package
-no longer provides. Use an older package version or add a dedicated entrypoint if you must
-support them.
+no longer provides. If you must support them, pin the older `0.2.x` line — the last releases
+that accepted the function default export. The `0.3.x` line requires the `>= 1.18.29` floor.
 
 ### Supported V1 setup (manual)
 
@@ -40,8 +40,12 @@ package under the singular `plugin` key yourself:
 3. Restart OpenCode — the config is read at startup, so a running session will not pick up the
    change until it restarts.
 
-Do not add the package to both `plugin` and `plugins`: V1 ignores `plugins`, and a mixed config
-can change which entries other plugins load.
+Do not add the package to **both** keys as a routine setup: V1 ignores `plugins`, and a mixed
+config can change which entries other plugins load. One exception: the installer upgrades a V1
+config by appending to `plugins` while preserving the existing legacy `plugin` array, so an
+upgraded config can legitimately contain both. After upgrading, keep only the key your runtime
+uses and preserve the other entries you still want — the installer does not remove or rewrite
+your existing plugin lists.
 
 ## Install
 

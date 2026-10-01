@@ -10,7 +10,7 @@
 
 A **skill + plugin** for [OpenCode](https://opencode.ai) that brings eval-driven development to AI agent skills — based on Anthropic's official [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) for Claude Code, ported to TypeScript and adapted for OpenCode's plugin architecture.
 
-**Compatibility:** OpenCode V2 (`plugins` key, `@opencode/plugin` ^2.0.0) and V1 ≥ 1.18.29 (`plugin` key, `@opencode-ai/plugin` ≥ 1.18.29). One published bundle ships both entrypoints; the automatic installer configures V2 and the supported V1 floor uses a manual `plugin`-key setup (see [`plugin/README.md`](plugin/README.md#supported-v1-setup-manual)).
+**Compatibility:** OpenCode V2 (`plugins` key, `@opencode/plugin` ^2.0.0) and V1 ≥ 1.18.29 (`plugin` key, `@opencode-ai/plugin` ≥ 1.18.29). One published bundle ships both entrypoints; the automatic installer configures V2 and the supported V1 floor uses a manual `plugin`-key setup (see [`plugin/README.md`](plugin/README.md#supported-v1-setup-manual)). Older V1 releases (before 1.18.29) need a function default export this line no longer provides — pin the older `0.2.x` releases for those runtimes.
 
 [Install](#install) · [What it does](#what-it-does) · [Plugin tools](#plugin-tools) · [Usage](#usage) · [Architecture](#architecture)
 
