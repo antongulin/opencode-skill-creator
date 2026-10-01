@@ -414,6 +414,24 @@ function deriveJsonSchema(args: unknown): unknown {
   return rest
 }
 
+/**
+ * Normalize the caller's cancellation signal across the two OpenCode APIs:
+ * V2 `ToolContext` exposes `signal`, V1 `ToolContext` exposes `abort`. Both are
+ * AbortSignals, so one shared executor body handles either, and absent/partial
+ * contexts (existing tests call executors with `{}`) yield `undefined`.
+ */
+function resolveAbortSignal(context: unknown): AbortSignal | undefined {
+  if (!context || typeof context !== "object") return undefined
+  const candidate = (context as { signal?: unknown; abort?: unknown }).signal ??
+    (context as { abort?: unknown }).abort
+  if (!candidate || typeof candidate !== "object") return undefined
+  const maybe = candidate as AbortSignal
+  return typeof maybe.aborted === "boolean" &&
+    typeof maybe.addEventListener === "function"
+    ? maybe
+    : undefined
+}
+
 function buildPluginTools(instance: PluginInstance) {
   return {
     tool: {
@@ -573,7 +591,7 @@ function buildPluginTools(instance: PluginInstance) {
             .optional()
             .describe("OpenCode agent for trigger eval runs (default: build)"),
         },
-        async execute(args) {
+        async execute(args, context) {
           const { readFileSync } = await import("fs")
           const evalSet: EvalItem[] = JSON.parse(
             readFileSync(args.evalSetPath, "utf-8"),
@@ -600,6 +618,7 @@ function buildPluginTools(instance: PluginInstance) {
             triggerOnly: args.triggerOnly ?? true,
             model: args.model,
             agent: args.agent ?? "build",
+            signal: resolveAbortSignal(context),
           })
 
           return JSON.stringify(result, null, 2)
@@ -636,7 +655,7 @@ function buildPluginTools(instance: PluginInstance) {
             .optional()
             .describe("Current iteration number"),
         },
-        async execute(args) {
+        async execute(args, context) {
           const { readFileSync } = await import("fs")
           const meta = parseSkillMd(args.skillPath)
           const evalResults = JSON.parse(readFileSync(args.evalResultsPath, "utf-8"))
@@ -653,6 +672,8 @@ function buildPluginTools(instance: PluginInstance) {
             model: args.model,
             logDir: args.logDir ?? null,
             iteration: args.iteration ?? null,
+            projectRoot: instance.projectRoot(),
+            signal: resolveAbortSignal(context),
           })
 
           return JSON.stringify({ description: newDescription, charCount: newDescription.length })
@@ -721,7 +742,7 @@ function buildPluginTools(instance: PluginInstance) {
             .optional()
             .describe("Directory for improvement transcripts"),
         },
-        async execute(args) {
+        async execute(args, context) {
           const { readFileSync } = await import("fs")
           const evalSet: EvalItem[] = JSON.parse(
             readFileSync(args.evalSetPath, "utf-8"),
@@ -746,6 +767,8 @@ function buildPluginTools(instance: PluginInstance) {
             verbose: true,
             liveReportPath: args.liveReportPath ?? null,
             logDir: args.logDir ?? null,
+            projectRoot,
+            signal: resolveAbortSignal(context),
           })
 
           return JSON.stringify(result, null, 2)
@@ -1058,9 +1081,12 @@ const v2Plugin: V2Plugin = {
           name,
           description: definition.description,
           input: deriveJsonSchema(definition.args),
-          async execute(raw: unknown) {
+          // Forward the real runtime context so each executor can observe its
+          // cancellation signal (V2 `context.signal`). Executors only read
+          // `args` plus, now, that signal.
+          async execute(raw: unknown, context: unknown) {
             return {
-              content: await definition.execute(raw as never, {} as never),
+              content: await definition.execute(raw as never, context as never),
             }
           },
         })

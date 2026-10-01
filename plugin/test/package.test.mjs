@@ -886,3 +886,199 @@ test("review preflight rejects an incomplete workspace unless allowPartial is se
     rmSync(tempHome, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// LD1 / LD3: real executor boundary. These drive the built tools with a real
+// `opencode` stub on PATH (no LLM) to prove (a) the loop and eval both select
+// the instance project root, never the caller cwd, and (b) a V2 `context.signal`
+// and a V1 `context.abort` both cancel the running child.
+// ---------------------------------------------------------------------------
+
+/** A real `opencode` stub that records its cwd/skill into a trace file. */
+function writeFakeOpencode(binDir, { sleep = false } = {}) {
+  mkdirSync(binDir, { recursive: true })
+  const fake = `#!/usr/bin/env node
+const fs = require("fs")
+const path = require("path")
+const cwd = process.cwd()
+let marker = null
+try { marker = fs.readFileSync(path.join(cwd, ".opencode", "probe-marker.txt"), "utf8") } catch {}
+let skillName = "unknown"
+try {
+  const names = fs.readdirSync(path.join(cwd, ".opencode", "skills"))
+  if (names.length) skillName = names[0]
+} catch {}
+if (process.env.SKC_TRACE) {
+  fs.writeFileSync(process.env.SKC_TRACE, JSON.stringify({ pid: process.pid, cwd, marker, directConfig: fs.existsSync(path.join(cwd, "opencode.jsonc")) }))
+}
+if (${sleep ? "true" : "false"}) {
+  process.on("SIGTERM", () => {})
+  setInterval(() => {}, 1000)
+} else {
+  process.stdout.write(JSON.stringify({ type: "tool_use", part: { tool: "read", input: { path: skillName + "/SKILL.md" } } }) + "\\n")
+  process.exit(0)
+}
+`
+  const fakePath = join(binDir, "opencode")
+  writeFileSync(fakePath, fake)
+  chmodSync(fakePath, 0o755)
+  return fakePath
+}
+
+function writeProbeProject(dir, label) {
+  mkdirSync(join(dir, ".opencode", "skills"), { recursive: true })
+  writeFileSync(join(dir, ".opencode", "probe-marker.txt"), label)
+  writeFileSync(join(dir, "opencode.jsonc"), JSON.stringify({ instructions: ["./local-rules.md"] }))
+  writeFileSync(join(dir, "local-rules.md"), `${label} rules\n`)
+}
+
+function writeFixtureSkill(dir, name) {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, "SKILL.md"),
+    ["---", `name: ${name}`, "description: A controlled boundary fixture.", "---", "", "# Fixture", ""].join("\n"),
+  )
+}
+
+test("skill_optimize_loop evaluates the instance root, not the caller cwd", async () => {
+  const root = mkdtempSync(join(tmpdir(), "osc-loop-root-"))
+  const target = join(root, "target")
+  const caller = join(root, "caller")
+  const binDir = join(root, "bin")
+  const trace = join(root, "loop-trace.json")
+  const previousPath = process.env.PATH
+  const previousTrace = process.env.SKC_TRACE
+  const previousCwd = process.cwd()
+
+  try {
+    writeProbeProject(target, "target")
+    writeProbeProject(caller, "caller")
+    writeFakeOpencode(binDir)
+    writeFixtureSkill(join(root, "candidate"), "loop-demo")
+    const evalSetPath = join(root, "eval.json")
+    writeFileSync(evalSetPath, JSON.stringify([{ query: "controlled fixture", should_trigger: true }]))
+
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`
+    process.env.SKC_TRACE = trace
+    process.chdir(caller)
+
+    const mod = await import(`${distEntryPath}?loop-root=${Date.now()}`)
+    const added = []
+    await setupUnderPrivateHome(mod, recordingCtx(added, { locationDirectory: target }))
+
+    // LD1-2: skill_eval already selected the instance root; lock that in.
+    const evalTrace = join(root, "eval-trace.json")
+    process.env.SKC_TRACE = evalTrace
+    const evalTool = added.find((tool) => tool.name === "skill_eval")
+    await evalTool.execute(
+      {
+        evalSetPath,
+        skillPath: join(root, "candidate"),
+        numWorkers: 1,
+        runsPerQuery: 1,
+        timeout: 5,
+        model: "fixture/model",
+      },
+      { signal: new AbortController().signal },
+    )
+    assert.equal(JSON.parse(readFileSync(evalTrace, "utf-8")).marker, "target")
+
+    // LD1-1: the optimize loop must also evaluate the instance root.
+    process.env.SKC_TRACE = trace
+    const loop = added.find((tool) => tool.name === "skill_optimize_loop")
+    // maxIterations 1 with a passing train set exits after the first eval, so no
+    // improvement child runs.
+    await loop.execute(
+      {
+        evalSetPath,
+        skillPath: join(root, "candidate"),
+        numWorkers: 1,
+        runsPerQuery: 1,
+        timeout: 5,
+        maxIterations: 1,
+        holdout: 0,
+        model: "fixture/model",
+      },
+      { signal: new AbortController().signal },
+    )
+
+    // The child ran in the synthetic eval root, but its .opencode marker must be
+    // the TARGET's, proving the loop evaluated the instance root.
+    const recorded = JSON.parse(readFileSync(trace, "utf-8"))
+    assert.equal(recorded.marker, "target")
+  } finally {
+    process.chdir(previousCwd)
+    if (previousPath === undefined) delete process.env.PATH
+    else process.env.PATH = previousPath
+    if (previousTrace === undefined) delete process.env.SKC_TRACE
+    else process.env.SKC_TRACE = previousTrace
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("V2 context.signal and V1 context.abort both cancel the running eval child", async () => {
+  for (const shape of ["signal", "abort"]) {
+    const root = mkdtempSync(join(tmpdir(), `osc-cancel-${shape}-`))
+    const target = join(root, "target")
+    const binDir = join(root, "bin")
+    const trace = join(root, "cancel-trace.json")
+    const previousPath = process.env.PATH
+    const previousTrace = process.env.SKC_TRACE
+
+    try {
+      writeProbeProject(target, "target")
+      writeFakeOpencode(binDir, { sleep: true })
+      writeFixtureSkill(join(root, "candidate"), "cancel-demo")
+      const evalSetPath = join(root, "eval.json")
+      writeFileSync(evalSetPath, JSON.stringify([{ query: "controlled fixture", should_trigger: true }]))
+
+      process.env.PATH = `${binDir}:${previousPath ?? ""}`
+      process.env.SKC_TRACE = trace
+
+      const mod = await import(`${distEntryPath}?cancel-${shape}-${Date.now()}`)
+      const added = []
+      await setupUnderPrivateHome(mod, recordingCtx(added, { locationDirectory: target }))
+
+      const evalTool = added.find((tool) => tool.name === "skill_eval")
+      const controller = new AbortController()
+      const context = shape === "signal" ? { signal: controller.signal } : { abort: controller.signal }
+      const pending = evalTool.execute(
+        { evalSetPath, skillPath: join(root, "candidate"), numWorkers: 1, runsPerQuery: 1, timeout: 60 },
+        context,
+      )
+
+      // Wait for the child to start before aborting.
+      const deadline = Date.now() + 5_000
+      while (!existsSync(trace) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      assert.equal(existsSync(trace), true, `child started for ${shape}`)
+      const childPid = JSON.parse(readFileSync(trace, "utf-8")).pid
+
+      controller.abort()
+      let caught = null
+      try {
+        await pending
+      } catch (error) {
+        caught = error
+      }
+
+      assert.equal(caught !== null && caught.name === "AbortError", true, `${shape} aborts explicitly`)
+      const alive = (() => {
+        try {
+          process.kill(childPid, 0)
+          return true
+        } catch {
+          return false
+        }
+      })()
+      assert.equal(alive, false, `${shape} kills the running child`)
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH
+      else process.env.PATH = previousPath
+      if (previousTrace === undefined) delete process.env.SKC_TRACE
+      else process.env.SKC_TRACE = previousTrace
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+})

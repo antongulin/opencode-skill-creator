@@ -250,6 +250,9 @@ The backup preserves user files and renames `SKILL.md` to `SKILL.md.backup` so O
 - The npm package loads compiled JavaScript from `dist/skill-creator.js` so OpenCode does not need to strip TypeScript under `node_modules`.
 - The plugin resolves bundled assets with `import.meta.url`, which works in OpenCode Desktop runtimes where `import.meta.path` is unavailable.
 - Trigger evaluations run with an explicit OpenCode agent, defaulting to `build`, to avoid false 0% scores from delegating default agents.
+- **Project scope (V2):** each plugin instance evaluates the project root it was loaded for, not the process working directory. `skill_eval` and `skill_optimize_loop` both use that root.
+- **Effective config in the eval root:** the isolated eval project mirrors the target project's direct root config (`opencode.jsonc`/`opencode.json`), the relative files those documents reference (`instructions` and `{file:...}`), and the `.opencode/` config, while excluding the skill under test. Providers, agents, and project instructions defined at the project root therefore stay effective during eval runs.
+- **Cancellation:** `skill_eval`, `skill_optimize_loop`, and `skill_improve_description` honor the caller's abort signal (`context.signal` in V2, `context.abort` in V1). Aborting kills the running `opencode` child, skips queued queries, and rejects with an `AbortError`, so a cancelled run is never reported as a normal failed/`run_errors: 0` result. The isolated eval temp root is always removed.
 - Release-safety tests now verify the compiled plugin entrypoint imports correctly and that `dist/` was built from the current TypeScript sources.
 
 ### For LLMs / automation (compact)

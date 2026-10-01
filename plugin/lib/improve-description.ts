@@ -18,7 +18,8 @@ import {
   classifyEvalFailures,
   formatFailureDiagnostics,
 } from "./failure-taxonomy"
-import { isFailedProcess, runProcess } from "./process"
+import { buildOpencodeEnv, isFailedProcess, runProcess } from "./process"
+import { abortError } from "./run-eval"
 import type { EvalOutput, EvalResultItem } from "./run-eval"
 
 // ---------------------------------------------------------------------------
@@ -32,11 +33,13 @@ async function callOpenCode(
   prompt: string,
   model: string | undefined,
   timeout = 300,
+  opts: { projectRoot?: string; signal?: AbortSignal } = {},
 ): Promise<string> {
   const tmpPath = join(tmpdir(), `skill-creator-${randomBytes(6).toString("hex")}.md`)
   writeFileSync(tmpPath, prompt)
 
   try {
+    if (opts.signal?.aborted) throw abortError()
     const cmd = ["opencode", "run", "--format", "json"]
     if (model) cmd.push("--model", model)
     // Use `--` to terminate option parsing so the trailing prompt is treated
@@ -83,10 +86,16 @@ async function callOpenCode(
       }
     }
 
+    // The improvement child runs with no explicit cwd. Pin PWD/cwd to the root
+    // the improvement belongs to, so project providers/agents resolve from the
+    // selected project instead of a stale caller PWD.
+    const cwd = opts.projectRoot ?? process.cwd()
     const result = await runProcess(cmd, {
-      env: { ...process.env },
+      cwd,
+      env: buildOpencodeEnv(cwd),
       timeoutMs,
       maxStderrChars,
+      signal: opts.signal,
       onStdoutChunk(chunk) {
         stdout += chunk
         lineBuffer += chunk
@@ -95,6 +104,11 @@ async function callOpenCode(
     })
 
     flushLines(true)
+
+    // A cancelled improvement is not a failed improvement.
+    if (result.aborted || opts.signal?.aborted) {
+      throw abortError()
+    }
 
     if (isFailedProcess(result)) {
       throw new Error(`opencode run exited ${result.exitCode}\nstderr: ${result.stderr}`)
@@ -143,6 +157,10 @@ export interface ImproveDescriptionOptions {
   testResults?: EvalOutput | null
   logDir?: string | null
   iteration?: number | null
+  /** Project root the improvement child must resolve providers/agents from. */
+  projectRoot?: string
+  /** Caller-owned cancellation; kills the improvement child on abort. */
+  signal?: AbortSignal
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +184,8 @@ export async function improveDescription(
     testResults,
     logDir,
     iteration,
+    projectRoot,
+    signal,
   } = opts
 
   const failedTriggers = evalResults.results.filter(
@@ -272,7 +292,7 @@ ${failureDiagnosticsSection}
 
 Please respond with only the new description text in <new_description> tags, nothing else.`
 
-  let text = await callOpenCode(prompt, model)
+  let text = await callOpenCode(prompt, model, undefined, { projectRoot, signal })
 
   const match = text.match(/<new_description>([\s\S]*?)<\/new_description>/)
   let description = match
@@ -300,7 +320,7 @@ Please respond with only the new description text in <new_description> tags, not
       `important trigger words and intent coverage. Respond with only ` +
       `the new description in <new_description> tags.`
 
-    const shortenText = await callOpenCode(shortenPrompt, model)
+    const shortenText = await callOpenCode(shortenPrompt, model, undefined, { projectRoot, signal })
     const shortenMatch = shortenText.match(
       /<new_description>([\s\S]*?)<\/new_description>/,
     )

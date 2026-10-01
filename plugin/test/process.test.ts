@@ -104,3 +104,55 @@ test("runProcess can stop early from stdout parsing without timing out", async (
   expect(result.stdout).toContain("triggered")
   expect(Date.now() - startedAt).toBeLessThan(1_000)
 })
+
+test("runProcess kills the child and reports aborted when the signal aborts", async () => {
+  const controller = new AbortController()
+  const startedAt = Date.now()
+  const pending = runProcess(
+    ["node", "-e", "setTimeout(() => undefined, 30_000)"],
+    { timeoutMs: 60_000, signal: controller.signal },
+  )
+
+  // Abort after the child has had a chance to spawn.
+  setTimeout(() => controller.abort(), 150)
+
+  const result = await pending
+
+  expect(result.aborted).toBe(true)
+  expect(result.timedOut).toBe(false)
+  // Must not have awaited the full 30 s child lifetime.
+  expect(Date.now() - startedAt).toBeLessThan(5_000)
+})
+
+test("runProcess force-kills an abort-ignoring child after the grace period", async () => {
+  const controller = new AbortController()
+  const startedAt = Date.now()
+  const pending = runProcess(
+    [
+      "node",
+      "-e",
+      "process.on('SIGTERM', () => {}); setTimeout(() => undefined, 30_000)",
+    ],
+    { timeoutMs: 60_000, killGraceMs: 50, signal: controller.signal },
+  )
+
+  setTimeout(() => controller.abort(), 100)
+
+  const result = await pending
+
+  expect(result.aborted).toBe(true)
+  expect(Date.now() - startedAt).toBeLessThan(5_000)
+})
+
+test("runProcess does not spawn when the signal is already aborted", async () => {
+  const controller = new AbortController()
+  controller.abort()
+
+  const result = await runProcess(["node", "-e", "process.exit(1)"], {
+    timeoutMs: 1_000,
+    signal: controller.signal,
+  })
+
+  expect(result.aborted).toBe(true)
+  expect(result.exitCode).toBe(null)
+})

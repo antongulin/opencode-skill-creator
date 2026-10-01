@@ -15,18 +15,42 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "fs"
 import { dirname, join, parse } from "path"
 import { randomBytes } from "crypto"
 import { tmpdir as osTmpdir } from "os"
+import { parse as parseJsonc } from "jsonc-parser"
 
-import { isFailedProcess, runProcess } from "./process"
+import { buildOpencodeEnv, isFailedProcess, runProcess } from "./process"
 
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** Config documents a project may place at its root, in precedence order. */
+const ROOT_CONFIG_FILES = ["opencode.json", "opencode.jsonc"] as const
+
+/**
+ * Create an AbortError-shaped error so cancellation is distinguishable from a
+ * genuine negative result or a query failure. Callers must never treat an
+ * aborted run as a normal failed query.
+ */
+export function abortError(message = "skill evaluation aborted by the caller"): Error {
+  const error = new Error(message)
+  error.name = "AbortError"
+  return error
+}
+
+export function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || (error as { code?: string }).code === "ABORT_ERR")
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -169,6 +193,9 @@ export const cliInstalledSkillEnumerator: SkillEnumerator = async (
   try {
     result = await runProcess(["opencode", "debug", "skill"], {
       cwd: projectRoot,
+      // Same env contract as the eval run: pin PWD to the project being
+      // inspected so a stale caller PWD can't point the check elsewhere.
+      env: buildOpencodeEnv(projectRoot),
       timeoutMs: 10_000,
     })
   } catch {
@@ -273,11 +300,89 @@ function linkOrCopyConfigEntry(source: string, target: string, isDirectory: bool
   }
 }
 
+/**
+ * Collect the local files a root config document references via a relative path
+ * (`instructions` entries and `{file:...}` substitutions). They are mirrored as
+ * siblings so those references keep resolving from the eval root: OpenCode
+ * resolves such paths relative to the config document's directory, which the
+ * mirror preserves.
+ */
+function collectRelativeConfigFiles(projectRoot: string, configFileName: string): string[] {
+  const text = readFileSync(join(projectRoot, configFileName), "utf-8")
+  const data = parseJsonc(text) as Record<string, unknown> | undefined
+  if (!data || typeof data !== "object") return []
+
+  const referenced: string[] = []
+  const pushLocal = (value: unknown) => {
+    if (typeof value !== "string" || !value) return
+    if (value.startsWith("/") || value.startsWith("~") || value.includes("://")) return
+    if (/[*?[\]{}]/.test(value)) return
+    referenced.push(value)
+  }
+
+  if (Array.isArray(data.instructions)) data.instructions.forEach(pushLocal)
+
+  const fromFiles = (value: unknown): void => {
+    if (typeof value === "string") {
+      const match = /^\{file:(.+)\}$/.exec(value)
+      if (match) pushLocal(match[1])
+      return
+    }
+    if (Array.isArray(value)) value.forEach(fromFiles)
+    else if (value && typeof value === "object") {
+      Object.values(value as Record<string, unknown>).forEach(fromFiles)
+    }
+  }
+  fromFiles(data)
+
+  return referenced
+}
+
+/**
+ * Mirror a project's direct root config documents into the eval root and carry
+ * across any relative `instructions`/`{file:...}` files they reference.
+ *
+ * OpenCode resolves those relative paths against the directory of the config
+ * document, so copying the document into the eval root is only correct if the
+ * referenced siblings come with it; otherwise the paths silently re-point at
+ * files that do not exist there and the instructions are lost.
+ */
+function mirrorRootConfigDocuments(projectRoot: string, evalRoot: string): void {
+  const referenced = new Set<string>()
+  for (const name of ROOT_CONFIG_FILES) {
+    const source = join(projectRoot, name)
+    if (!existsSync(source)) continue
+    linkOrCopyConfigEntry(source, join(evalRoot, name), false)
+    for (const relative of collectRelativeConfigFiles(projectRoot, name)) {
+      referenced.add(relative)
+    }
+  }
+
+  for (const relative of referenced) {
+    const source = join(projectRoot, relative)
+    if (source === projectRoot || !source.startsWith(projectRoot + "/")) continue
+    if (!existsSync(source)) continue
+    const target = join(evalRoot, relative)
+    if (!target.startsWith(evalRoot + "/")) continue
+    if (existsSync(target)) continue
+    mkdirSync(dirname(target), { recursive: true })
+    linkOrCopyConfigEntry(source, target, statSync(source).isDirectory())
+  }
+}
+
 export function symlinkProjectOpenCodeConfig(
   projectRoot: string,
   evalRoot: string,
   skillName: string,
 ): void {
+  // Mirror the project's *direct root* config documents (and the relative
+  // files they reference) first. OpenCode resolves `instructions` (and
+  // `{file:...}` references) relative to the directory of the config document,
+  // so a root `opencode.jsonc` that lives at `projectRoot` is ineffective when
+  // only its `.opencode/` folder is mirrored: the document itself would be
+  // absent and its relative paths would have no base in the eval root.
+  mirrorRootConfigDocuments(projectRoot, evalRoot)
+
   const sourceOpenCode = join(projectRoot, ".opencode")
   if (!existsSync(sourceOpenCode)) return
 
@@ -325,6 +430,7 @@ async function runSingleQuery(
   agent: string,
   triggerOnly: boolean,
   model?: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(skillName)) {
     throw new Error(
@@ -334,6 +440,8 @@ async function runSingleQuery(
 
   const uniqueId = randomBytes(4).toString("hex")
   const cleanName = `${skillName}-skill-${uniqueId}`
+  // Pre-aborted call: spawn nothing and create no temp root.
+  if (signal?.aborted) throw abortError()
   const evalRoot = mkdtempSync(join(osTmpdir(), "opencode-skill-eval-"))
   const skillsDir = join(evalRoot, ".opencode", "skills", cleanName)
   const skillFile = join(skillsDir, "SKILL.md")
@@ -411,9 +519,10 @@ async function runSingleQuery(
       // load the *real* project skill under test (base name), so its triggers are
       // attributed to that skill instead of the synthetic one — a false 0. Pin PWD
       // to evalRoot so only the synthetic skill (plus global skills) are in scope.
-      env: { ...process.env, PWD: evalRoot },
+      env: buildOpencodeEnv(evalRoot),
       timeoutMs,
       maxStderrChars,
+      signal,
       onStdoutChunk(chunk) {
         buffer += chunk
         flushBuffer()
@@ -422,6 +531,12 @@ async function runSingleQuery(
     })
 
     flushBuffer(true)
+
+    // A cancelled run is not a negative result. Throw so it is never counted as
+    // a passed/failed eval outcome in the summary.
+    if (result.aborted || signal?.aborted) {
+      throw abortError()
+    }
 
     if (triggered && triggerOnly) {
       return true
@@ -461,6 +576,13 @@ export interface RunEvalOptions {
   triggerOnly?: boolean
   model?: string
   agent?: string
+  /**
+   * Caller-owned cancellation. When aborted, queued jobs are not started,
+   * in-flight children are killed, and the returned promise rejects with an
+   * `AbortError` so cancellation can never be mistaken for a normal negative
+   * result (`run_errors: 0`).
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -482,7 +604,10 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     triggerOnly = true,
     model,
     agent = "build",
+    signal,
   } = opts
+
+  if (signal?.aborted) throw abortError()
 
   // Build the full list of (item, runIdx) jobs
   type Job = { item: EvalItem; runIdx: number }
@@ -501,9 +626,15 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     errored: boolean
   }[] = []
   let idx = 0
+  let abortedDuringRun = false
 
   async function worker() {
     while (idx < jobs.length) {
+      // Stop pulling queued jobs once the caller aborts.
+      if (signal?.aborted) {
+        abortedDuringRun = true
+        return
+      }
       const job = jobs[idx++]
       if (!job) break
       try {
@@ -516,6 +647,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
           agent,
           triggerOnly,
           model,
+          signal,
         )
         jobResults.push({
           query: job.item.query,
@@ -524,6 +656,10 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
           errored: false,
         })
       } catch (e) {
+        if (isAbortError(e) || signal?.aborted) {
+          abortedDuringRun = true
+          return
+        }
         console.error(`Warning: query failed: ${e}`)
         jobResults.push({
           query: job.item.query,
@@ -537,6 +673,11 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
 
   const workers = Array.from({ length: Math.min(numWorkers, jobs.length) }, () => worker())
   await Promise.all(workers)
+
+  // Cancellation is reported as an explicit abort, never as a scored result.
+  if (signal?.aborted || abortedDuringRun) {
+    throw abortError()
+  }
 
   // Aggregate per-query
   const queryTriggers: Map<string, boolean[]> = new Map()
