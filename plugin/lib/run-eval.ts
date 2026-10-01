@@ -663,13 +663,24 @@ export function symlinkProjectOpenCodeConfig(
     if (existsSync(sourceSkills)) {
       const targetSkills = join(targetOpenCode, "skills")
       mkdirSync(targetSkills, { recursive: true })
+      const canonicalSkillsRoot = canonicalizeForExclusion(sourceSkills)
+      // Candidate-specific exclusion: the tested skill's own directory wherever
+      // it lives (default: `.opencode/skills/<skillName>`). This preserves the
+      // legacy alias safety even when no explicit path is passed.
+      const candidatePath = excludedSkillPath ?? join(sourceSkills, skillName)
       for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
         if (entry.name === skillName) continue
-        linkOrCopyConfigEntry(
-          join(sourceSkills, entry.name),
-          join(targetSkills, entry.name),
-          entry.isDirectory(),
-        )
+        const entryPath = join(sourceSkills, entry.name)
+        const canonicalEntry = canonicalizeForExclusion(entryPath)
+        // A whole-skills-root alias (`.opencode/skills/alias -> .opencode/skills`)
+        // would reintroduce every skill, including the tested one. Descendants of
+        // the root are legitimate siblings and MUST still be mirrored.
+        if (canonicalEntry === canonicalSkillsRoot) continue
+        // An alias to the tested candidate (inside `.opencode/skills`, or — when
+        // an explicit path is given — outside `.opencode`) must not reintroduce
+        // the candidate's body. Equality/descendant only; never excludes siblings.
+        if (isWithinExcludedSkill(candidatePath, entryPath)) continue
+        linkOrCopyConfigEntry(entryPath, join(targetSkills, entry.name), entry.isDirectory())
       }
     }
   }

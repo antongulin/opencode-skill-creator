@@ -663,6 +663,135 @@ test("V2-T1: a candidate inside .opencode/skills keeps existing exclusion and si
 })
 
 // ---------------------------------------------------------------------------
+// W1: the `.opencode/skills` mirror loop must exclude the tested candidate by
+// canonical path (not only by base name), while still mirroring every
+// legitimate sibling. A whole-skills-root alias is excluded; a normal sibling
+// is never swept out by the candidate-specific guard.
+// ---------------------------------------------------------------------------
+
+test("W1-T1: candidate and its alias under .opencode/skills are excluded, sibling preserved", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t1-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t1-eval-"))
+  const SECRET = "W1_CANDIDATE_SECRET"
+  try {
+    mkdirSync(join(projectRoot, ".opencode", "skills", "candidate"), { recursive: true })
+    mkdirSync(join(projectRoot, ".opencode", "skills", "sibling"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, ".opencode", "skills", "candidate", "SKILL.md"),
+      ["---", "name: candidate", "---", "", SECRET, ""].join("\n"),
+    )
+    writeFileSync(join(projectRoot, ".opencode", "skills", "sibling", "SKILL.md"), "SIBLING_BODY\n")
+    // An alias inside the skills dir pointing at the candidate.
+    symlinkSync(
+      join(projectRoot, ".opencode", "skills", "candidate"),
+      join(projectRoot, ".opencode", "skills", "candidate-alias"),
+      "dir",
+    )
+
+    // Explicit candidate path (skill_eval / optimize-loop case).
+    symlinkProjectOpenCodeConfig(
+      projectRoot, evalRoot, "candidate",
+      join(projectRoot, ".opencode", "skills", "candidate"),
+    )
+
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "candidate"))).toBe(false)
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "candidate-alias"))).toBe(false)
+    // The legitimate sibling MUST still be mirrored (no blanket exclusion).
+    expect(readFileSync(join(evalRoot, ".opencode", "skills", "sibling", "SKILL.md"), "utf-8")).toBe("SIBLING_BODY\n")
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("W1-T1: omitted excludedSkillPath still derives the candidate path and keeps siblings", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t1-omitted-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t1-omitted-eval-"))
+  const SECRET = "W1_OMITTED_SECRET"
+  try {
+    mkdirSync(join(projectRoot, ".opencode", "skills", "candidate"), { recursive: true })
+    mkdirSync(join(projectRoot, ".opencode", "skills", "sibling"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, ".opencode", "skills", "candidate", "SKILL.md"),
+      ["---", "name: candidate", "---", "", SECRET, ""].join("\n"),
+    )
+    writeFileSync(join(projectRoot, ".opencode", "skills", "sibling", "SKILL.md"), "SIBLING_BODY\n")
+    symlinkSync(
+      join(projectRoot, ".opencode", "skills", "candidate"),
+      join(projectRoot, ".opencode", "skills", "candidate-alias"),
+      "dir",
+    )
+
+    // No explicit path: the helper derives `.opencode/skills/<skillName>`.
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "candidate")
+
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "candidate"))).toBe(false)
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "candidate-alias"))).toBe(false)
+    expect(readFileSync(join(evalRoot, ".opencode", "skills", "sibling", "SKILL.md"), "utf-8")).toBe("SIBLING_BODY\n")
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("W1-T2: a whole-skills-root alias is excluded while a sibling is preserved", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t2-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t2-eval-"))
+  try {
+    mkdirSync(join(projectRoot, ".opencode", "skills", "candidate"), { recursive: true })
+    mkdirSync(join(projectRoot, ".opencode", "skills", "sibling"), { recursive: true })
+    writeFileSync(join(projectRoot, ".opencode", "skills", "candidate", "SKILL.md"), "---\nname: candidate\n---\n")
+    writeFileSync(join(projectRoot, ".opencode", "skills", "sibling", "SKILL.md"), "SIBLING_BODY\n")
+    // `.opencode/skills/whole -> .opencode/skills` would reintroduce every skill.
+    symlinkSync(
+      join(projectRoot, ".opencode", "skills"),
+      join(projectRoot, ".opencode", "skills", "whole"),
+      "dir",
+    )
+
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "candidate")
+
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "whole"))).toBe(false)
+    expect(readFileSync(join(evalRoot, ".opencode", "skills", "sibling", "SKILL.md"), "utf-8")).toBe("SIBLING_BODY\n")
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("W1-T2: an external candidate alias under .opencode/skills is excluded (explicit path)", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t2-ext-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-w1t2-ext-eval-"))
+  const SECRET = "W1_EXTERNAL_SECRET"
+  try {
+    // Candidate lives OUTSIDE `.opencode/skills`; an alias to it sits inside.
+    mkdirSync(join(projectRoot, "external-candidate"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, "external-candidate", "SKILL.md"),
+      ["---", "name: external-candidate", "---", "", SECRET, ""].join("\n"),
+    )
+    mkdirSync(join(projectRoot, ".opencode", "skills", "sibling"), { recursive: true })
+    writeFileSync(join(projectRoot, ".opencode", "skills", "sibling", "SKILL.md"), "SIBLING_BODY\n")
+    symlinkSync(
+      join(projectRoot, "external-candidate"),
+      join(projectRoot, ".opencode", "skills", "external-alias"),
+      "dir",
+    )
+
+    symlinkProjectOpenCodeConfig(
+      projectRoot, evalRoot, "external-candidate",
+      join(projectRoot, "external-candidate"),
+    )
+
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "external-alias"))).toBe(false)
+    expect(readFileSync(join(evalRoot, ".opencode", "skills", "sibling", "SKILL.md"), "utf-8")).toBe("SIBLING_BODY\n")
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Conflict guard (D-01): the enumerator is injected so V2's ctx.skill.list path
 // is exercised deterministically. A null result must abort, not warn-and-skip.
 // ---------------------------------------------------------------------------

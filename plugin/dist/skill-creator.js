@@ -1481,10 +1481,18 @@ function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName, excluded
     if (existsSync2(sourceSkills)) {
       const targetSkills = join3(targetOpenCode, "skills");
       mkdirSync(targetSkills, { recursive: true });
+      const canonicalSkillsRoot = canonicalizeForExclusion(sourceSkills);
+      const candidatePath = excludedSkillPath ?? join3(sourceSkills, skillName);
       for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
         if (entry.name === skillName)
           continue;
-        linkOrCopyConfigEntry(join3(sourceSkills, entry.name), join3(targetSkills, entry.name), entry.isDirectory());
+        const entryPath = join3(sourceSkills, entry.name);
+        const canonicalEntry = canonicalizeForExclusion(entryPath);
+        if (canonicalEntry === canonicalSkillsRoot)
+          continue;
+        if (isWithinExcludedSkill(candidatePath, entryPath))
+          continue;
+        linkOrCopyConfigEntry(entryPath, join3(targetSkills, entry.name), entry.isDirectory());
       }
     }
   }
