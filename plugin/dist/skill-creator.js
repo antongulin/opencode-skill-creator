@@ -1492,6 +1492,8 @@ function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName, excluded
           continue;
         if (isWithinExcludedSkill(candidatePath, entryPath))
           continue;
+        if (isAncestorOfExcludedSkill(candidatePath, entryPath))
+          continue;
         linkOrCopyConfigEntry(entryPath, join3(targetSkills, entry.name), entry.isDirectory());
       }
     }

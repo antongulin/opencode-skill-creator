@@ -680,6 +680,11 @@ export function symlinkProjectOpenCodeConfig(
         // an explicit path is given — outside `.opencode`) must not reintroduce
         // the candidate's body. Equality/descendant only; never excludes siblings.
         if (isWithinExcludedSkill(candidatePath, entryPath)) continue
+        // A parent/ancestor alias (`.opencode/skills/alias -> <a dir that
+        // contains the candidate>`) would copy the whole subtree and reintroduce
+        // the candidate. Refuse it; a normal sibling is never an ancestor of the
+        // candidate, so legitimate siblings remain mirrored.
+        if (isAncestorOfExcludedSkill(candidatePath, entryPath)) continue
         linkOrCopyConfigEntry(entryPath, join(targetSkills, entry.name), entry.isDirectory())
       }
     }
