@@ -12,10 +12,26 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
+import { tmpdir, homedir } from "node:os"
 import { join, relative } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import { execFileSync } from "node:child_process"
+import { createServer } from "node:http"
 import test from "node:test"
+
+// Process-wide test isolation. `setup()`/`server()` run process startup side
+// effects once per module load; force those to stay off the network, off the
+// developer's real cache, and away from the developer's browser. `withPrivateHome`
+// redirects the config/HOME writes per call.
+const ISOLATION_ROOT = mkdtempSync(join(tmpdir(), "osc-isolation-"))
+process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE = "0"
+// Never auto-open a browser from automated tests, even if a test forgets to
+// pass openBrowser: false.
+process.env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER = "0"
+process.env.XDG_CACHE_HOME = join(ISOLATION_ROOT, "cache")
+process.on("exit", () => {
+  rmSync(ISOLATION_ROOT, { recursive: true, force: true })
+})
 
 const pluginSourcePath = fileURLToPath(new URL("../skill-creator.ts", import.meta.url))
 const runtimeEntryPath = fileURLToPath(new URL("../runtime-entry.ts", import.meta.url))
@@ -86,17 +102,382 @@ test("bundled skill uses the opencode-specific skill name", () => {
   assert.match(distSkill, /^name: opencode-skill-creator$/m)
 })
 
-test("compiled entrypoint imports as a plugin function", async () => {
-  const mod = await import(distEntryPath)
+test("compiled entrypoint exposes both the V1 server and V2 setup entrypoints", async () => {
+  // Windows needs a file:// URL; a bare "E:\..." path is rejected by the ESM loader.
+  const mod = await import(pathToFileURL(distEntryPath).href)
 
-  assert.equal(typeof mod.default, "function")
+  assert.equal(typeof mod.default, "object")
+  assert.equal(typeof mod.default.server, "function")
+  assert.equal(typeof mod.default.setup, "function")
+  assert.equal(mod.default.id, "opencode-skill-creator")
 })
 
-test("compiled entrypoint only exposes plugin functions for legacy OpenCode loaders", async () => {
-  const mod = await import(distEntryPath)
+test("compiled entrypoint only exposes plugin entrypoints for OpenCode loaders", async () => {
+  const mod = await import(pathToFileURL(distEntryPath).href)
 
   assert.deepEqual(Object.keys(mod), ["default"])
-  assert.equal(typeof mod.default, "function")
+  assert.equal(typeof mod.default.server, "function")
+  assert.equal(typeof mod.default.setup, "function")
+})
+
+test("setup() and server() never write the real user config", async () => {
+  // Snapshot the real home's opencode skill dir before running setup/server
+  // under a private HOME, then assert it is byte-for-byte unchanged.
+  const snapshotSkills = (root) => {
+    if (!existsSync(root)) return null
+    const hashes = {}
+    for (const entry of readdirSync(root, { recursive: true }).sort()) {
+      const full = join(root, entry)
+      if (statSync(full).isFile()) {
+        hashes[entry] = createHash("sha256").update(readFileSync(full)).digest("hex")
+      }
+    }
+    return hashes
+  }
+  const realSkills = join(homedir(), ".config", "opencode", "skills")
+  const before = snapshotSkills(realSkills)
+
+  const mod = await import(`${distEntryPath}?isolation=${Date.now()}`)
+  const added = []
+  await withPrivateHome(async () => {
+    await mod.default.setup(recordingCtx(added))
+  })
+  await withPrivateHome(async () => {
+    await mod.default.server({})
+  })
+
+  // The developer's real config must be untouched: the install target is
+  // derived from HOME/XDG_CONFIG_HOME, which withPrivateHome redirects.
+  assert.deepEqual(snapshotSkills(realSkills), before, "real ~/.config/opencode/skills must be untouched")
+  assert.equal(
+    added.some((tool) => tool.name === "skill_validate"),
+    true,
+    "setup still registered tools under the private home",
+  )
+})
+
+// V2 registers tools through `ctx.tool.transform`; record the added definitions
+// from a real setup() call. The recording ctx is a wiring double only — the
+// same surface is exercised against the real runtime in v2-runtime.test.mjs.
+//
+// `setup()` runs process startup side effects (bundled-skill install, auto
+// update). Every call MUST run under a private HOME/XDG so the test never
+// writes the developer's real `~/.config/opencode`. The helper sets and restores
+// that environment around the setup call.
+const HOME_KEYS = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "USERPROFILE", "OPENCODE_SKILL_CREATOR_AUTO_UPDATE"]
+
+function withPrivateHome(fn) {
+  const tempHome = mkdtempSync(join(tmpdir(), "osc-private-home-"))
+  const previous = {}
+  for (const key of HOME_KEYS) previous[key] = process.env[key]
+  process.env.HOME = tempHome
+  process.env.USERPROFILE = tempHome
+  process.env.XDG_CONFIG_HOME = join(tempHome, ".config")
+  process.env.XDG_CACHE_HOME = join(tempHome, ".cache")
+  // Disable the registry auto-update check: no network in unit tests.
+  process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE = "0"
+  const restore = () => {
+    for (const key of HOME_KEYS) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+    rmSync(tempHome, { recursive: true, force: true })
+  }
+  try {
+    const result = fn(tempHome)
+    if (result && typeof result.then === "function") {
+      return result.finally(restore)
+    }
+    restore()
+    return result
+  } catch (error) {
+    restore()
+    throw error
+  }
+}
+
+async function collectV2Tools(skillListData = [], locationDirectory = process.cwd()) {
+  const mod = await import(pathToFileURL(distEntryPath).href)
+  const added = []
+  const ctx = {
+    location: { directory: locationDirectory },
+    skill: { list: async () => ({ data: skillListData }) },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition) })
+      },
+    },
+  }
+  return withPrivateHome(async () => {
+    const cleanup = await mod.default.setup(ctx)
+    return { added, cleanup }
+  })
+}
+
+/** Run a V2/V1 setup under a private HOME/XDG and return the cleanup. */
+async function setupUnderPrivateHome(mod, ctx) {
+  return withPrivateHome(async () => {
+    const cleanup = await mod.default.setup(ctx)
+    return cleanup
+  })
+}
+
+function recordingCtx(added, { skillListData = [], locationDirectory = process.cwd() } = {}) {
+  return {
+    location: { directory: locationDirectory },
+    skill: { list: async () => ({ data: skillListData }) },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition) })
+      },
+    },
+  }
+}
+
+test("V2 setup registers the full public tool surface with JSON Schema input", async () => {
+  const { added } = await collectV2Tools()
+
+  const expectedNames = [
+    "skill_add_gold_standard",
+    "skill_aggregate_benchmark",
+    "skill_eval",
+    "skill_export_static_review",
+    "skill_generate_report",
+    "skill_get_gold_advice",
+    "skill_improve_description",
+    "skill_list_gold_standards",
+    "skill_optimize_loop",
+    "skill_parse",
+    "skill_remove_gold_standard",
+    "skill_serve_review",
+    "skill_stop_review",
+    "skill_validate",
+  ]
+
+  assert.deepEqual(
+    added.map((tool) => tool.name).sort(),
+    expectedNames,
+  )
+
+  for (const tool of added) {
+    assert.equal(typeof tool.description, "string", `${tool.name} description`)
+    assert.equal(tool.input.type, "object", `${tool.name} input type`)
+    // Zod sets `additionalProperties: false` whenever the object has keys; a
+    // keyless object omits it, which JSON Schema also treats as unconstrained.
+    if (typeof tool.input.additionalProperties !== "undefined") {
+      assert.equal(
+        tool.input.additionalProperties,
+        false,
+        `${tool.name} additionalProperties`,
+      )
+    }
+    assert.equal(typeof tool.execute, "function", `${tool.name} execute`)
+  }
+
+  const validate = added.find((tool) => tool.name === "skill_validate")
+  assert.deepEqual(validate.input.required, ["skillPath"])
+
+  const noArgTools = ["skill_list_gold_standards", "skill_get_gold_advice"]
+  for (const name of noArgTools) {
+    const tool = added.find((entry) => entry.name === name)
+    // Zod omits `required` when no key is required; JSON Schema treats that as
+    // "nothing required", so accept either an empty array or absence.
+    assert.deepEqual(tool.input.required ?? [], [], `${name} required`)
+    assert.deepEqual(tool.input.properties, {}, `${name} properties`)
+  }
+})
+
+test("V1 server() hooks and V2 setup expose the same tool names and required args", async () => {
+  const mod = await import(pathToFileURL(distEntryPath).href)
+  const hooks = await withPrivateHome(() => mod.default.server({}))
+  const v1Tools = hooks.tool
+
+  const { added } = await collectV2Tools()
+  const v2ByName = new Map(added.map((tool) => [tool.name, tool]))
+
+  const v1Names = Object.keys(v1Tools).sort()
+  const v2Names = added.map((tool) => tool.name).sort()
+  assert.deepEqual(v1Names, v2Names)
+
+  for (const [name, definition] of Object.entries(v1Tools)) {
+    const v2 = v2ByName.get(name)
+    assert.ok(v2, `${name} present in V2`)
+    assert.equal(definition.description, v2.description)
+
+    // The V2 JSON Schema `required` must match the V1 zod shape's required keys.
+    const required = Object.entries(definition.args)
+      .filter(([, schema]) => !schema.isOptional())
+      .map(([key]) => key)
+      .sort()
+    assert.deepEqual([...(v2.input.required ?? [])].sort(), required, `${name} required`)
+  }
+})
+
+test("V2 setup rejects a context without a location directory", async () => {
+  const mod = await import(pathToFileURL(distEntryPath).href)
+  const added = []
+  await assert.rejects(
+    setupUnderPrivateHome(mod, {
+      skill: { list: async () => ({ data: [] }) },
+      tool: {
+        transform: async (callback) => {
+          callback({ add: (definition) => added.push(definition) })
+        },
+      },
+    }),
+    /no ctx\.location\.directory/,
+  )
+})
+
+test("two V2 locations keep independent enumerators, roots and review servers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "osc-two-locations-"))
+  const locA = join(root, "a")
+  const locB = join(root, "b")
+  mkdirSync(join(locA, ".opencode"), { recursive: true })
+  mkdirSync(join(locB, ".opencode"), { recursive: true })
+
+  const writeSkill = (dir, name) => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, "SKILL.md"),
+      ["---", `name: ${name}`, "description: A fixture skill.", "---", "", "# Fixture", ""].join("\n"),
+    )
+  }
+  writeSkill(join(locA, "alpha"), "alpha")
+  writeSkill(join(locB, "alpha"), "alpha")
+  const evalSetA = join(root, "eval-a.json")
+  const evalSetB = join(root, "eval-b.json")
+  for (const path of [evalSetA, evalSetB]) {
+    writeFileSync(path, JSON.stringify([{ query: "use alpha", should_trigger: true }]))
+  }
+
+  // Each ctx records the skill-list input so we can prove the enumerator is
+  // scoped to its own instance's project root.
+  const makeCtx = (added, location) => ({
+    location: { directory: location },
+    skill: {
+      list: async (input) => {
+        const requested = input?.location?.directory
+        if (requested !== location) {
+          return { data: [{ name: "alpha", path: `${requested}/alpha` }] }
+        }
+        return { data: [{ name: "alpha", path: `${location}/alpha` }] }
+      },
+    },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition) })
+      },
+    },
+  })
+
+  const mod = await import(`${distEntryPath}?two-loc=${Date.now()}`)
+  const addedA = []
+  const addedB = []
+  const cleanupA = await setupUnderPrivateHome(mod, makeCtx(addedA, locA))
+  const cleanupB = await setupUnderPrivateHome(mod, makeCtx(addedB, locB))
+
+  const evalA = addedA.find((tool) => tool.name === "skill_eval")
+  const evalB = addedB.find((tool) => tool.name === "skill_eval")
+
+  // Each instance's skill_eval enumerates against its OWN location; the second
+  // setup() must not have overwritten the first instance's enumerator.
+  await assert.rejects(
+    evalA.execute({ evalSetPath: evalSetA, skillPath: join(locA, "alpha") }),
+    new RegExp(`${locA}/alpha`),
+  )
+  await assert.rejects(
+    evalB.execute({ evalSetPath: evalSetB, skillPath: join(locB, "alpha") }),
+    new RegExp(`${locB}/alpha`),
+  )
+
+  // Server ownership: A starts a review server; B's cleanup must not close it.
+  const workspace = join(root, "workspace")
+  mkdirSync(join(workspace, "eval-0", "with_skill", "outputs"), { recursive: true })
+  writeFileSync(
+    join(workspace, "eval-0", "eval_metadata.json"),
+    `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
+  )
+  writeFileSync(join(workspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
+
+  const serveA = addedA.find((tool) => tool.name === "skill_serve_review")
+  const startedA = JSON.parse(
+    (await serveA.execute({ workspace, port: 0, skillName: "owned-by-a", allowPartial: true, openBrowser: false }))
+      .content,
+  )
+
+  await cleanupB()
+
+  // A's server is still serving after B's cleanup.
+  assert.equal((await fetch(startedA.url)).status, 200, "B cleanup must not close A server")
+
+  await cleanupA()
+  await assert.rejects(fetch(startedA.url), "A cleanup closes A server")
+
+  rmSync(root, { recursive: true, force: true })
+})
+
+test("V1 and V2 tool execution return equivalent payloads", async () => {
+  const mod = await import(pathToFileURL(distEntryPath).href)
+  const hooks = await withPrivateHome(() => mod.default.server({}))
+  const { added } = await collectV2Tools()
+
+  const skillDir = mkdtempSync(join(tmpdir(), "osc-parity-skill-"))
+  try {
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      ["---", "name: parity-skill", "description: A parity test skill.", "---", "", "# Parity", ""].join("\n"),
+    )
+
+    const v1 = await hooks.tool.skill_validate.execute({ skillPath: skillDir })
+    const v2 = await added
+      .find((tool) => tool.name === "skill_validate")
+      .execute({ skillPath: skillDir })
+
+    assert.equal(v2.content, v1)
+  } finally {
+    rmSync(skillDir, { recursive: true, force: true })
+  }
+})
+
+test("V2 setup cleanup stops active review servers", async () => {
+  const tempHome = mkdtempSync(join(tmpdir(), "osc-v2-cleanup-"))
+  const workspace = join(tempHome, "workspace")
+
+  try {
+    mkdirSync(join(workspace, "eval-0", "with_skill", "outputs"), { recursive: true })
+    writeFileSync(
+      join(workspace, "eval-0", "eval_metadata.json"),
+      `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
+    )
+    writeFileSync(join(workspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
+
+    const mod = await import(`${distEntryPath}?v2-cleanup=${Date.now()}`)
+    const added = []
+    const cleanup = await setupUnderPrivateHome(
+      mod,
+      recordingCtx(added, { locationDirectory: workspace }),
+    )
+
+    const serve = added.find((tool) => tool.name === "skill_serve_review")
+    const response = await serve.execute({
+      workspace,
+      port: 0,
+      skillName: "cleanup-skill",
+      allowPartial: true,
+      openBrowser: false,
+    })
+    const result = JSON.parse(response.content)
+
+    // Server is live before cleanup.
+    assert.equal((await fetch(result.url)).status, 200)
+
+    await cleanup()
+
+    await assert.rejects(fetch(result.url), "server should be closed after cleanup")
+  } finally {
+    rmSync(tempHome, { recursive: true, force: true })
+  }
 })
 
 test("compiled entrypoint does not depend on Bun runtime APIs", () => {
@@ -135,7 +516,7 @@ test("compiled review server runs in Node without a Bun runtime global", async (
     process.env.PATH = previousPath ? `${fakeBin}:${previousPath}` : fakeBin
 
     const mod = await import(`${distEntryPath}?review-node=${Date.now()}`)
-    const hooks = await mod.default({})
+    const hooks = await mod.default.server({})
     const result = JSON.parse(
       await hooks.tool.skill_serve_review.execute({
         workspace,
@@ -143,6 +524,7 @@ test("compiled review server runs in Node without a Bun runtime global", async (
         skillName: "test-skill",
         benchmarkPath,
         allowPartial: true,
+        openBrowser: false,
       }),
     )
 
@@ -222,13 +604,14 @@ test("compiled review server stop closes active browser connections", async () =
     process.env.XDG_CONFIG_HOME = tempHome
 
     const mod = await import(`${distEntryPath}?review-stop=${Date.now()}`)
-    const hooks = await mod.default({})
+    const hooks = await mod.default.server({})
     const result = JSON.parse(
       await hooks.tool.skill_serve_review.execute({
         workspace,
         port: 0,
         skillName: "test-skill",
         allowPartial: true,
+        openBrowser: false,
       }),
     )
     const url = new URL(result.url)
@@ -276,7 +659,7 @@ test("compiled plugin startup installs renamed skill and archives plugin-owned l
     process.env.XDG_CONFIG_HOME = tempHome
 
     const mod = await import(`${distEntryPath}?startup=${Date.now()}`)
-    const hooks = await mod.default({})
+    const hooks = await mod.default.server({})
 
     const newSkillDir = join(
       tempHome,
@@ -339,4 +722,167 @@ test("compiled entrypoint has no trailing whitespace", () => {
   const source = readFileSync(distEntryPath, "utf-8")
 
   assert.equal(/[ \t]+$/m.test(source), false)
+})
+
+// ---------------------------------------------------------------------------
+// E-03: the review server must not kill an unrelated process that holds the
+// requested port, and must fail loudly instead.
+// ---------------------------------------------------------------------------
+
+test("review server refuses to steal a busy port and leaves the other listener alive", async () => {
+  const tempHome = mkdtempSync(join(tmpdir(), "osc-port-guard-"))
+  const workspace = join(tempHome, "workspace")
+
+  // An unrelated process owns a port first.
+  const blocker = createServer((_req, res) => res.end("blocker"))
+  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve))
+  const port = blocker.address().port
+
+  let blockerConnections = 0
+  blocker.on("connection", () => {
+    blockerConnections += 1
+  })
+
+  try {
+    mkdirSync(join(workspace, "eval-0", "with_skill", "outputs"), { recursive: true })
+    writeFileSync(
+      join(workspace, "eval-0", "eval_metadata.json"),
+      `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
+    )
+    writeFileSync(join(workspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
+
+    const mod = await import(`${distEntryPath}?port-guard=${Date.now()}`)
+    const added = []
+    await setupUnderPrivateHome(mod, recordingCtx(added, { locationDirectory: workspace }))
+
+    const serve = added.find((tool) => tool.name === "skill_serve_review")
+    await assert.rejects(
+      serve.execute({
+        workspace,
+        port,
+        skillName: "port-guard",
+        allowPartial: true,
+        openBrowser: false,
+      }),
+      /already in use/,
+    )
+
+    // The unrelated listener is still serving its own traffic.
+    const response = await fetch(`http://127.0.0.1:${port}`)
+    assert.equal(await response.text(), "blocker")
+    assert.ok(blockerConnections > 0)
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve))
+    rmSync(tempHome, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// F-01: the published tarball must ship exactly the runtime assets and no
+// sources, and the manifest must describe a source-matching build.
+// ---------------------------------------------------------------------------
+
+test("npm pack manifest ships runtime assets and excludes sources", () => {
+  const output = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: pluginRoot,
+    encoding: "utf-8",
+  })
+  const parsed = JSON.parse(output)
+  // npm 11 returned an array; npm 12 returns an object keyed by package name.
+  const manifest = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0]
+  const files = manifest.files.map((entry) => entry.path)
+
+  for (const required of [
+    "dist/skill-creator.js",
+    "dist/package.json",
+    "dist/build-manifest.json",
+    "dist/templates/viewer.html",
+    "dist/skill/SKILL.md",
+    "bin/opencode-skill-creator.js",
+    "README.md",
+  ]) {
+    assert.equal(files.includes(required), true, `missing ${required}`)
+  }
+
+  assert.equal(files.some((path) => path.endsWith(".ts")), false, "ships no .ts")
+  assert.equal(files.some((path) => path.includes("node_modules")), false)
+  assert.equal(files.some((path) => path.includes(".codegraph")), false)
+})
+
+test("npm pack manifest excludes dist/package.json from leaking dev fields", () => {
+  const distPackage = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../dist/package.json", import.meta.url)), "utf-8"),
+  )
+  assert.equal(distPackage.name, "opencode-skill-creator")
+  assert.equal(distPackage.main, "./dist/skill-creator.js")
+  assert.equal(typeof distPackage.peerDependencies["@opencode/plugin"], "string")
+})
+
+// ---------------------------------------------------------------------------
+// G-01: the rebuilt dist must externalize the SDK runtimes instead of inlining
+// them (the #43 defect), and must not carry any node_modules markers.
+// ---------------------------------------------------------------------------
+
+test("rebuilt dist externalizes the SDK packages instead of inlining them", () => {
+  const source = readFileSync(distEntryPath, "utf-8")
+
+  assert.doesNotMatch(source, /node_modules\/@opencode/)
+  assert.doesNotMatch(source, /node_modules\/zod/)
+  // The V1 SDK import stays a bare specifier for the runtime to resolve.
+  assert.match(source, /from "@opencode-ai\/plugin"/)
+})
+
+test("build script uses the correct bun external flag form", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../scripts/build.mjs", import.meta.url)),
+    "utf-8",
+  )
+
+  // `--external:<name>` is a silent no-op in bun; only `--external=<name>`
+  // works for scoped packages.
+  assert.doesNotMatch(source, /--external:/)
+  assert.match(source, /--external=@opencode-ai\/plugin/)
+  assert.match(source, /--external=@opencode\/plugin/)
+})
+
+// ---------------------------------------------------------------------------
+// E-02: strict review preflight rejects an incomplete workspace and allows an
+// explicit allowPartial override.
+// ---------------------------------------------------------------------------
+
+test("review preflight rejects an incomplete workspace unless allowPartial is set", async () => {
+  const tempHome = mkdtempSync(join(tmpdir(), "osc-preflight-"))
+  const workspace = join(tempHome, "workspace")
+
+  try {
+    // eval-0/with_skill exists, but no baseline run and no run-* outputs.
+    mkdirSync(join(workspace, "eval-0", "with_skill"), { recursive: true })
+
+    const mod = await import(`${distEntryPath}?preflight=${Date.now()}`)
+    const added = []
+    await setupUnderPrivateHome(mod, recordingCtx(added, { locationDirectory: workspace }))
+
+    const serve = added.find((tool) => tool.name === "skill_serve_review")
+    await assert.rejects(
+      serve.execute({ workspace, port: 0, skillName: "preflight", allowPartial: false, openBrowser: false }),
+      /Strict review preflight failed/,
+    )
+
+    // allowPartial bypasses the strict gate and starts the server.
+    const response = await serve.execute({
+      workspace,
+      port: 0,
+      skillName: "preflight",
+      allowPartial: true,
+      openBrowser: false,
+    })
+    const result = JSON.parse(response.content)
+    assert.equal(result.workflowGuard.allowPartial, true)
+    assert.equal(typeof result.url, "string")
+
+    const stop = added.find((tool) => tool.name === "skill_stop_review")
+    await stop.execute({ workspace })
+  } finally {
+    rmSync(tempHome, { recursive: true, force: true })
+  }
 })

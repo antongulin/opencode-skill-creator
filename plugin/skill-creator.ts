@@ -13,18 +13,21 @@
  *   Copy this directory to .opencode/plugins/ or ~/.config/opencode/plugins/
  */
 
-import { type Plugin, tool } from "@opencode-ai/plugin"
+import { type Plugin, tool, type ToolDefinition } from "@opencode-ai/plugin"
+import type { Plugin as V2Plugin } from "@opencode/plugin"
 import { join, dirname, isAbsolute, relative, sep } from "path"
 import { homedir } from "os"
 import { fileURLToPath } from "url"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
-
 import { validateSkill } from "./lib/validate"
 import { parseSkillMd } from "./lib/utils"
 import {
   assertNoInstalledSkillConflict,
-  runEval,
+  cliInstalledSkillEnumerator,
+  createV2SkillEnumerator,
   findProjectRoot,
+  runEval,
+  type SkillEnumerator,
 } from "./lib/run-eval"
 import { improveDescription } from "./lib/improve-description"
 import { runLoop } from "./lib/run-loop"
@@ -331,13 +334,60 @@ export async function maybeAutoRefreshPluginCache(
 // Track running review servers so they can be stopped
 // ---------------------------------------------------------------------------
 
-const activeServers: Map<string, { stop: () => Promise<void>; url: string }> = new Map()
+// ---------------------------------------------------------------------------
+// Plugin instance state
+//
+// Tools and review servers are owned per OpenCode location/plugin instance, not
+// by the module. Two V2 locations in one process each get their own enumerator
+// and server map, and one location's cleanup never closes another's servers.
+// ---------------------------------------------------------------------------
+
+interface ReviewServer {
+  stop: () => Promise<void>
+  url: string
+}
+
+interface PluginInstance {
+  /** Directory whose project skills and config the eval/conflict guard targets. */
+  projectRoot: () => string
+  /** Enumerates installed skills for the conflict guard. */
+  enumerate: SkillEnumerator
+  /** Review servers started by this instance, keyed by workspace. */
+  servers: Map<string, ReviewServer>
+}
+
+/**
+ * Build one plugin instance's state. Exported so tests can drive two instances
+ * with distinct location/enumerator/server ownership.
+ */
+export function createPluginInstance(
+  overrides: Partial<PluginInstance> = {},
+): PluginInstance {
+  return {
+    projectRoot: () => findProjectRoot(),
+    enumerate: cliInstalledSkillEnumerator,
+    servers: new Map(),
+    ...overrides,
+  }
+}
 
 // ---------------------------------------------------------------------------
-// Plugin export
+// Shared startup + tool registry
+//
+// One tool definition per tool, declared with the V1 zod shape. The V2
+// entrypoint derives its JSON Schema from the same shape, so schemas and
+// execution bodies each exist exactly once.
 // ---------------------------------------------------------------------------
 
-export const SkillCreatorPlugin: Plugin = async (ctx) => {
+// The bundled-skill install and auto-update check are process-scoped side
+// effects. OpenCode calls exactly one entrypoint per process (V1 `server()` or
+// V2 `setup()`); the guard keeps a second call free.
+let initialized = false
+
+async function initialize(): Promise<void> {
+  if (initialized) return
+  initialized = true
+
   // Auto-install bundled skill files to ~/.config/opencode/skills/opencode-skill-creator/
   ensureBundledSkillInstalled({
     bundledSkillDir: BUNDLED_SKILL_DIR,
@@ -346,7 +396,25 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
     onError: (message, error) => console.warn(message, error),
   })
   void maybeAutoRefreshPluginCache()
+}
 
+/**
+ * Convert a V1 zod arg shape into the JSON Schema that the V2 `editor.add`
+ * expects. Zod 4 (bundled by @opencode-ai/plugin) provides `toJSONSchema`; the
+ * `$schema` dialect key is dropped so the stored tool matches the
+ * `ToolInfo.input` JSON Schema shape.
+ */
+function deriveJsonSchema(args: unknown): unknown {
+  const schema = tool.schema as unknown as {
+    object(shape: unknown): unknown
+    toJSONSchema(value: unknown): Record<string, unknown>
+  }
+  const jsonSchema = schema.toJSONSchema(schema.object(args ?? {}))
+  const { $schema: _dialect, ...rest } = jsonSchema
+  return rest
+}
+
+function buildPluginTools(instance: PluginInstance) {
   return {
     tool: {
       // ---------------------------------------------------------------
@@ -517,8 +585,8 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
           }
 
           const meta = parseSkillMd(args.skillPath)
-          const projectRoot = findProjectRoot()
-          await assertNoInstalledSkillConflict(meta.name, projectRoot)
+          const projectRoot = instance.projectRoot()
+          await assertNoInstalledSkillConflict(meta.name, projectRoot, instance.enumerate)
 
           const result = await runEval({
             evalSet,
@@ -659,8 +727,8 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             readFileSync(args.evalSetPath, "utf-8"),
           )
           const meta = parseSkillMd(args.skillPath)
-          const projectRoot = findProjectRoot()
-          await assertNoInstalledSkillConflict(meta.name, projectRoot)
+          const projectRoot = instance.projectRoot()
+          await assertNoInstalledSkillConflict(meta.name, projectRoot, instance.enumerate)
 
           const result = await runLoop({
             evalSet,
@@ -801,15 +869,19 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             .boolean()
             .optional()
             .describe("Allow launching review even if with_skill/baseline run pairs are incomplete (default: false)"),
+          openBrowser: tool.schema
+            .boolean()
+            .optional()
+            .describe("Open the review URL in the default browser (default: true for interactive use). Automated callers should pass false or set OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0."),
         },
         async execute(args) {
           const prep = prepareReviewLaunch(args)
 
           // Stop any existing server for this workspace
-          const existing = activeServers.get(args.workspace)
+          const existing = instance.servers.get(args.workspace)
           if (existing) {
             await existing.stop()
-            activeServers.delete(args.workspace)
+            instance.servers.delete(args.workspace)
           }
 
           const templatePath = join(TEMPLATES_DIR, "viewer.html")
@@ -821,10 +893,11 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
             previousWorkspace: args.previousWorkspace ?? null,
             benchmarkPath: prep.benchmarkPath,
             templatePath,
-            openBrowser: true,
+            // Interactive default; automated/library callers opt out.
+            openBrowser: args.openBrowser ?? true,
           })
 
-          activeServers.set(args.workspace, { stop, url })
+          instance.servers.set(args.workspace, { stop, url })
 
           return JSON.stringify({
             url,
@@ -855,10 +928,10 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
         },
         async execute(args) {
           if (args.workspace) {
-            const srv = activeServers.get(args.workspace)
+            const srv = instance.servers.get(args.workspace)
             if (srv) {
               await srv.stop()
-              activeServers.delete(args.workspace)
+              instance.servers.delete(args.workspace)
               return JSON.stringify({ stopped: args.workspace })
             }
             return JSON.stringify({ error: "No server running for this workspace" })
@@ -866,11 +939,11 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
 
           // Stop all
           const stopped: string[] = []
-          for (const [ws, srv] of activeServers) {
+          for (const [ws, srv] of instance.servers) {
             await srv.stop()
             stopped.push(ws)
           }
-          activeServers.clear()
+          instance.servers.clear()
           return JSON.stringify({ stopped })
         },
       }),
@@ -937,4 +1010,87 @@ export const SkillCreatorPlugin: Plugin = async (ctx) => {
   }
 }
 
-export default SkillCreatorPlugin
+// V1 entrypoint: legacy OpenCode (>= 1.18.29) calls `server()` and expects the
+// hooks object. The `Plugin` type comes from @opencode-ai/plugin, which stays a
+// type-only, externalized import in the published bundle. V1 hooks are
+// process-wide, so this instance uses the process defaults (cwd project root,
+// `opencode debug skill` enumeration).
+export const SkillCreatorPlugin: Plugin = async () => {
+  await initialize()
+  return buildPluginTools(createPluginInstance())
+}
+
+// V2 entrypoint: OpenCode V2 reads the default export's `id` and `setup`.
+// Declared as a plain object so no runtime @opencode/plugin import is needed;
+// the `V2Plugin` type import is erased at build time. Each setup() call owns its
+// own instance state (enumerator, review servers, project root), keyed to the
+// location OpenCode passes in `ctx.location`.
+const v2Plugin: V2Plugin = {
+  id: "opencode-skill-creator",
+  async setup(ctx) {
+    await initialize()
+
+    // The eval target is the location this plugin instance loaded for, not the
+    // process cwd. Guard the location shape so a malformed ctx cannot silently
+    // fall back to an unrelated directory.
+    const locationDirectory = ctx.location?.directory
+    if (typeof locationDirectory !== "string" || !locationDirectory) {
+      throw new Error(
+        "opencode-skill-creator: setup() received no ctx.location.directory; cannot resolve the project root for skill evaluation.",
+      )
+    }
+
+    const instance = createPluginInstance({
+      projectRoot: () => findProjectRoot(locationDirectory),
+      // Enumerate installed skills through the V2 skill API so the eval
+      // conflict guard works on V2, where `opencode debug skill` no longer
+      // exists. Returning null (API failure) makes the guard fail loudly.
+      enumerate: createV2SkillEnumerator(ctx),
+    })
+
+    const tools = buildPluginTools(instance).tool
+
+    await ctx.tool.transform((editor) => {
+      for (const [name, definition] of Object.entries(
+        tools as Record<string, ToolDefinition>,
+      )) {
+        editor.add({
+          name,
+          description: definition.description,
+          input: deriveJsonSchema(definition.args),
+          async execute(raw: unknown) {
+            return {
+              content: await definition.execute(raw as never, {} as never),
+            }
+          },
+        })
+      }
+    })
+
+    // Hook/transform registrations are disposed by OpenCode; this instance's
+    // review servers are process-level resources started by its own tools.
+    return async () => {
+      const servers = [...instance.servers.values()]
+      instance.servers.clear()
+      await Promise.all(
+        servers.map(async (server) => {
+          try {
+            await server.stop()
+          } catch {
+            // Best-effort cleanup while the plugin is shutting down.
+          }
+        }),
+      )
+    }
+  },
+}
+
+export default {
+  ...v2Plugin,
+  // V1 (>= 1.18.29) calls `server()`; the function export remains for older
+  // releases that imported the named `SkillCreatorPlugin`.
+  async server() {
+    return SkillCreatorPlugin({} as never)
+  },
+}
+

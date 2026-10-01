@@ -21,6 +21,9 @@ tmp/
 # Package manager installs
 plugin/node_modules/
 
+# CodeGraph local index (generated; never commit)
+.codegraph/
+
 # Marketing skills (project-level only)
 .opencode/
 .agents/

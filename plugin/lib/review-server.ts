@@ -397,12 +397,6 @@ class PayloadTooLargeError extends Error {
   }
 }
 
-interface CommandResult {
-  ok: boolean
-  stdout: string
-  error?: Error
-}
-
 function readStream(stream: IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = ""
@@ -427,46 +421,11 @@ function readStream(stream: IncomingMessage, maxBytes: number): Promise<string> 
   })
 }
 
-function runCommand(command: string, args: string[]): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const proc = spawn(command, args, {
-      stdout: "pipe",
-      stderr: "ignore",
-    })
-    let text = ""
-
-    proc.stdout?.setEncoding("utf-8")
-    proc.stdout?.on("data", (chunk) => {
-      text += chunk
-    })
-    proc.on("error", (error) => resolve({ ok: false, stdout: text, error }))
-    proc.on("close", (code) => resolve({ ok: code === 0, stdout: text }))
-  })
-}
-
-async function killPort(port: number): Promise<void> {
-  if (!Number.isInteger(port) || port <= 0) return
-
-  try {
-    const result = await runCommand("lsof", ["-ti", `:${port}`])
-    const text = result.stdout
-
-    for (const pidStr of text.trim().split("\n")) {
-      const pid = parseInt(pidStr.trim(), 10)
-      if (!isNaN(pid)) {
-        try {
-          process.kill(pid, "SIGTERM")
-        } catch {
-          /* process already gone */
-        }
-      }
-    }
-    if (text.trim()) {
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-  } catch {
-    /* lsof not available or no process found */
-  }
+function isAddressInUse(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as NodeJS.ErrnoException).code === "EADDRINUSE"
+  )
 }
 
 interface ReviewRequestContext {
@@ -608,6 +567,29 @@ function listen(server: Server, port: number): Promise<void> {
   })
 }
 
+/**
+ * Bind to a requested port without touching any other process. OpenCode runs
+ * alongside a user's other services, so the previous `lsof -ti | SIGTERM`
+ * behavior could kill an unrelated listener on a shared port. When the port is
+ * already occupied we surface an actionable error instead.
+ */
+async function bindReviewServer(
+  server: Server,
+  port: number,
+): Promise<void> {
+  try {
+    await listen(server, port)
+    return
+  } catch (error) {
+    if (isAddressInUse(error)) {
+      throw new Error(
+        `Review server port ${port} is already in use by another process. Stop that process or pass a different port (skill_serve_review accepts a "port" argument, and port 0 picks a free port).`,
+      )
+    }
+    throw error
+  }
+}
+
 function closeServer(server: Server, sockets: Set<Socket>): Promise<void> {
   for (const socket of sockets) {
     socket.destroy()
@@ -632,7 +614,42 @@ export interface ServeReviewOptions {
   previousWorkspace?: string | null
   benchmarkPath?: string | null
   templatePath: string
+  /**
+   * Open the review URL in the default browser. Defaults to true for the
+   * interactive `skill_serve_review` tool. Set false (or
+   * `OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0`) for automated/library callers so
+   * tests never launch the user's browser.
+   */
   openBrowser?: boolean
+  /**
+   * Test seam: override the browser launcher (defaults to `spawn("open", …)`).
+   * The launcher must forward asynchronous failures (e.g. a missing binary) to
+   * `onError` so the review server can stay up and report the manual URL.
+   */
+  openBrowserImpl?: (url: string, onError: (error: Error) => void) => void
+}
+
+/** Disable automatic browser opening via the environment. */
+export function browserOpenDisabledByEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const value = env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER
+  return value === "0" || value === "false"
+}
+
+function defaultOpenBrowser(
+  url: string,
+  onError: (error: Error) => void,
+): void {
+  const openProc = spawn("open", [url], {
+    detached: true,
+    stdio: "ignore",
+  })
+  // A missing launcher (e.g. headless Linux) surfaces as an asynchronous
+  // 'error' event, which the caller's try/catch cannot catch. Handle it so an
+  // unhandled 'error' does not take the process down.
+  openProc.on("error", onError)
+  openProc.unref()
 }
 
 /**
@@ -655,6 +672,7 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
     benchmarkPath,
     templatePath,
     openBrowser = true,
+    openBrowserImpl = defaultOpenBrowser,
   } = opts
 
   if (!existsSync(workspace) || !statSync(workspace).isDirectory()) {
@@ -670,9 +688,8 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
     previous = loadPreviousIteration(previousWorkspace)
   }
 
-  // Kill any existing process on the target port
-  await killPort(port)
-
+  // Bind without killing any other process on the requested port (see
+  // bindReviewServer). A busy port fails loudly instead of stealing the port.
   const context: ReviewRequestContext = {
     workspace,
     skillName,
@@ -691,7 +708,7 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
       sockets.delete(socket)
     })
   })
-  await listen(server, port)
+  await bindReviewServer(server, port)
 
   const address = server.address()
   if (!address || typeof address === "string") {
@@ -700,16 +717,22 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
   const actualPort = (address as AddressInfo).port
   const serverUrl = `http://localhost:${actualPort}`
 
-  if (openBrowser) {
-    // Open browser (best-effort, non-blocking)
+  // Open the browser only for interactive use. Automated callers disable it
+  // via `openBrowser: false` or OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0.
+  if (openBrowser && !browserOpenDisabledByEnv()) {
+    // Best-effort and non-blocking. The try/catch covers synchronous throws;
+    // the `onError` callback covers asynchronous launcher failures (a missing
+    // binary) so the review server stays up and the manual URL remains usable.
+    const reportOpenFailure = (error: Error) => {
+      console.warn(
+        `Could not open the review page automatically (${error.message}). ` +
+          `Open it manually: ${serverUrl}`,
+      )
+    }
     try {
-      const openProc = spawn("open", [serverUrl], {
-        detached: true,
-        stdio: "ignore",
-      })
-      openProc.unref()
-    } catch {
-      /* ignore — headless environment */
+      openBrowserImpl(serverUrl, reportOpenFailure)
+    } catch (error) {
+      reportOpenFailure(error instanceof Error ? error : new Error(String(error)))
     }
   }
 
@@ -720,7 +743,6 @@ export async function serveReview(opts: ServeReviewOptions): Promise<{
     stop: () => closeServer(server, sockets),
   }
 }
-
 // ---------------------------------------------------------------------------
 // Static HTML export
 // ---------------------------------------------------------------------------

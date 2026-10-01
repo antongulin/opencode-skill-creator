@@ -33,8 +33,14 @@ test("publish workflow prepares dependencies required by prepack", () => {
   const workflow = readFileSync(publishWorkflowPath, "utf-8")
 
   assert.match(workflow, /oven-sh\/setup-bun@v\d+/)
-  assert.match(workflow, /working-directory:\s*plugin\s+run:\s*npm install/s)
+  assert.match(workflow, /working-directory:\s*plugin\s+run:\s*npm ci/s)
   assert.match(workflow, /run:\s*npm publish --access public --provenance\s+working-directory:\s*plugin/s)
+})
+
+test("publish workflow stages the lockfile with the automatic version bump", () => {
+  const workflow = readFileSync(publishWorkflowPath, "utf-8")
+
+  assert.match(workflow, /git add plugin\/package\.json plugin\/package-lock\.json/)
 })
 
 test("publish workflow uses npm trusted publishing provenance", () => {
