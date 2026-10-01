@@ -26,6 +26,20 @@ export const INSTALL_VERSION_FILE = ".opencode-skill-creator-version"
  */
 export const INSTALL_MANIFEST_FILE = ".opencode-skill-creator-manifest.json"
 
+/**
+ * Root paths inside the managed skill directory that this installer must NEVER
+ * claim ownership of or prune, regardless of what any manifest records:
+ * the user's (possibly customized) `SKILL.md`, its backup, the version marker,
+ * and the ownership manifest itself. They are protected by name, not by a hash
+ * comparison, so a forged manifest listing them cannot delete them.
+ */
+const RESERVED_ROOT_PATHS: ReadonlySet<string> = new Set([
+  "SKILL.md",
+  "SKILL.md.user-backup",
+  INSTALL_VERSION_FILE,
+  INSTALL_MANIFEST_FILE,
+])
+
 export interface EnsureBundledSkillInstalledOptions {
   bundledSkillDir: string
   configDir: string
@@ -108,13 +122,12 @@ function writeManifest(skillsDir: string, manifest: SkillInstallManifest): void 
 }
 
 /**
- * Build the ownership manifest for a staged install directory. Every regular
- * file copied from the bundle is recorded by relative POSIX path and sha256.
- * The preserved user `SKILL.md` is deliberately NOT recorded when it differs
- * from the bundle's copy: it is user-authored and must never be treated as a
- * plugin-owned file that a later upgrade may prune.
+ * Walk a directory and return the relative POSIX paths of its regular files,
+ * excluding the reserved root paths. This is the single source of truth for
+ * "what this installer copied owns": the bundle listing and the staged-copy
+ * manifest both derive from it, so the protected names are never tracked.
  */
-function listBundleFiles(bundledSkillDir: string): Set<string> {
+function listRegularFilesExcludingReserved(root: string): Set<string> {
   const files = new Set<string>()
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -122,40 +135,28 @@ function listBundleFiles(bundledSkillDir: string): Set<string> {
       if (entry.isDirectory()) {
         walk(abs)
       } else if (entry.isFile()) {
-        files.add(relative(bundledSkillDir, abs).split(sep).join("/"))
+        const rel = relative(root, abs).split(sep).join("/")
+        if (RESERVED_ROOT_PATHS.has(rel)) continue
+        files.add(rel)
       }
     }
   }
-  walk(bundledSkillDir)
+  walk(root)
   return files
+}
+
+/** Relative POSIX paths of regular files shipped by the bundle (no reserved). */
+function listBundleFiles(bundledSkillDir: string): Set<string> {
+  return listRegularFilesExcludingReserved(bundledSkillDir)
 }
 
 function buildManifest(
   tmpInstallDir: string,
-  bundledSkillDir: string,
   packageVersion: string,
 ): SkillInstallManifest {
   const files: Record<string, string> = {}
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const abs = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        walk(abs)
-      } else if (entry.isFile()) {
-        files[relative(tmpInstallDir, abs).split(sep).join("/")] = sha256File(abs)
-      }
-    }
-  }
-  walk(tmpInstallDir)
-
-  const bundleSkill = join(bundledSkillDir, "SKILL.md")
-  if (
-    "SKILL.md" in files &&
-    existsSync(bundleSkill) &&
-    sha256File(bundleSkill) !== files["SKILL.md"]
-  ) {
-    // The staged SKILL.md is the preserved user file, not the bundle's.
-    delete files["SKILL.md"]
+  for (const rel of listRegularFilesExcludingReserved(tmpInstallDir)) {
+    files[rel] = sha256File(join(tmpInstallDir, rel))
   }
   return { schema: 1, packageVersion, files }
 }
@@ -163,10 +164,13 @@ function buildManifest(
 /**
  * Remove files this installer previously recorded that are no longer shipped
  * by the bundle. A file is pruned only when ALL hold:
+ *   - it is not one of the reserved root paths (never pruned, ever),
  *   - it was recorded in the previous manifest,
  *   - its on-disk bytes still match the recorded hash (not user-modified),
  *   - it is absent from the new bundle,
- *   - the on-disk entry is a regular file (never a directory or symlink), and
+ *   - neither the managed dir root nor ANY path component above the leaf is a
+ *     symlink (so an internal or external alias can never redirect the delete),
+ *   - the on-disk leaf is a regular file (never a directory or symlink), and
  *   - its real path stays inside the managed skill directory.
  * Anything else — untracked/custom files, locally-modified recorded files,
  * legacy installs without a manifest — is preserved.
@@ -177,6 +181,17 @@ function pruneStaleManagedFiles(
   newBundleFiles: ReadonlySet<string>,
 ): void {
   if (!oldManifest) return
+
+  // The managed dir root itself must not be a symlink: if it is, every path
+  // beneath it resolves elsewhere and no prune may proceed.
+  let rootStats
+  try {
+    rootStats = lstatSync(skillsDir)
+  } catch {
+    return
+  }
+  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) return
+
   const canonicalRoot = (() => {
     try {
       return realpathSync(skillsDir)
@@ -192,7 +207,26 @@ function pruneStaleManagedFiles(
 
   for (const [rel, recordedHash] of Object.entries(oldManifest.files)) {
     if (!isSafeRelativePath(rel)) continue
+    if (RESERVED_ROOT_PATHS.has(rel)) continue // never prune reserved names
     if (newBundleFiles.has(rel)) continue
+
+    // No path component above the leaf may be a symlink (lstat each ancestor).
+    const segments = rel.split("/")
+    let ancestor = skillsDir
+    let ancestorIsSymlink = false
+    for (let i = 0; i < segments.length - 1; i++) {
+      ancestor = join(ancestor, segments[i])
+      try {
+        if (lstatSync(ancestor).isSymbolicLink()) {
+          ancestorIsSymlink = true
+          break
+        }
+      } catch {
+        ancestorIsSymlink = true // missing ancestor -> cannot safely prune
+        break
+      }
+    }
+    if (ancestorIsSymlink) continue
 
     const target = join(skillsDir, rel)
     let stats
@@ -310,11 +344,7 @@ export function ensureBundledSkillInstalled(
         }
       }
 
-      const newManifest = buildManifest(
-        tmpInstallDir,
-        options.bundledSkillDir,
-        options.packageVersion,
-      )
+      const newManifest = buildManifest(tmpInstallDir, options.packageVersion)
       // A recorded file is stale only when the new bundle no longer ships it —
       // derived from the bundle itself, not from the staged (possibly
       // user-overridden) copy.
@@ -330,11 +360,14 @@ export function ensureBundledSkillInstalled(
         copyDirRecursive(tmpInstallDir, skillsDir)
       }
 
-      // The version marker and ownership manifest advance together, only after
-      // the copy above succeeded — so a failed install never reports the new
-      // version or claims ownership of files it did not write.
-      writeFileSync(versionFile, `${options.packageVersion}\n`)
+      // Write the ownership metadata FIRST, then advance the version marker.
+      // If the manifest write fails, the version marker still reflects the last
+      // successfully completed install and the error is reported — so a failed
+      // upgrade never claims the new version. (This is best-effort ordering,
+      // not an atomic two-file transaction: the two writes can still be
+      // interrupted between them.)
       writeManifest(skillsDir, newManifest)
+      writeFileSync(versionFile, `${options.packageVersion}\n`)
     }
 
     if (existsSync(legacySkillDir)) {

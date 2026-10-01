@@ -121,9 +121,12 @@ When the user requests a durable behavior change, record it here or in the relev
   indicator `|`/`>`, optional chomping (`+`/`-`), and optional explicit indent
   `1-9` in either order. Scalar values match the YAML reference for that subset
   (literal keeps breaks/indent/trailing spaces; folded folds adjacent lines and
-  keeps blank lines and more-indented lines; clip/strip/keep chomping). It is
-  **not** a general YAML parser (no anchors, escapes, flow maps). CRLF is
-  normalized in the description value only; `fullContent` bytes are unchanged.
+  keeps blank lines and more-indented lines). Chomping mirrors the reference
+  exactly: `-` strips all trailing breaks, default clips to one trailing break
+  for a non-empty block, and `+` keeps every trailing break (including a
+  blank-only block's blank lines). It is **not** a general YAML parser (no
+  anchors, escapes, flow maps). CRLF is normalized in the description value only;
+  `fullContent` bytes are unchanged.
 - Eval results are identified **per eval-set item**, never by query text:
   `runEval` aggregates by item index and returns one result per item in eval-set
   order, so duplicate queries keep their own labels/counts and `runLoop` splits
@@ -131,13 +134,20 @@ When the user requests a durable behavior change, record it here or in the relev
   re-key aggregation by query string or match the holdout split by query text.
 - The bundled-skill installer owns only the files it copied: it records them with
   their sha256 in `.opencode-skill-creator-manifest.json` (schema 1, internal
-  metadata, not a public contract) and on upgrade removes only a recorded,
-  on-disk-unchanged regular file that the new bundle no longer ships and whose
-  real path stays inside the managed dir. It must never delete user-authored,
-  untracked, or locally-modified files, sibling skills, or the preserved
-  `SKILL.md`/`SKILL.md.user-backup`/version/marker. A **legacy install without a
-  manifest prunes nothing**; tracking starts with the next verified copy. Never
-  replace this with a blanket recursive wipe of the managed directory.
+  metadata, not a public contract). The reserved root paths — `SKILL.md`,
+  `SKILL.md.user-backup`, the version marker, and the manifest itself — are
+  protected by name and are **never** tracked or pruned, regardless of any
+  (even well-formed, hash-matching) manifest content. On upgrade it removes only
+  a recorded, on-disk-unchanged regular file that the new bundle no longer ships
+  and whose path stays inside the managed dir; it lstat-checks the managed dir
+  root and every ancestor component and refuses to prune through any symlink.
+  It must never delete user-authored, untracked, or locally-modified files or
+  sibling skills. It writes the ownership metadata **before** advancing the
+  version marker, so a metadata-write failure holds the old version and is
+  reported via `onError` (best-effort ordering, not an atomic two-file
+  transaction). A **legacy install without a manifest prunes nothing**; tracking
+  starts with the next verified copy. Never replace this with a blanket
+  recursive wipe of the managed directory.
 
 ### Credit adopted contributor work in release notes
 

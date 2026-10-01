@@ -406,7 +406,7 @@ test("P42-04: a user's customized SKILL.md and its backup survive an upgrade whi
   })
 })
 
-test("P42-04: an install failure is reported and never falsely advances the version", () => {
+test("archiveLegacySkill disables legacy SKILL.md before moving the legacy directory", () => {
   withTempDir((root) => {
     const configDir = join(root, "config")
     const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
@@ -431,6 +431,218 @@ test("P42-04: an install failure is reported and never falsely advances the vers
     expect(errors[0].message).toBe("Failed to install opencode-skill-creator skill")
     // The version marker still reflects the last successful install.
     expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe("1.0.0\n")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P42-04 correction: ownership metadata must be written BEFORE the version
+// marker commits. A metadata-write failure must hold the old version and report
+// it; a retry after the owned obstacle is removed completes the upgrade.
+// ---------------------------------------------------------------------------
+
+test("P42-04c1: a manifest-write failure holds the old version and reports, then a retry completes", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const bundle = writeBundle(root, "bundle", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "agents/helper.md": "helper\n",
+    })
+
+    // First install commits version + manifest normally.
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "1.0.0" })
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe("1.0.0\n")
+
+    // Seed an OWNED obstacle: a directory where the manifest file must be
+    // written makes the manifest write fail deterministically (EISDIR).
+    rmSync(join(skillsDir, INSTALL_MANIFEST_FILE), { force: true })
+    mkdirSync(join(skillsDir, INSTALL_MANIFEST_FILE))
+
+    const errors: Array<{ message: string; error: unknown }> = []
+    expect(() =>
+      ensureBundledSkillInstalled({
+        bundledSkillDir: bundle,
+        configDir,
+        packageVersion: "2.0.0",
+        onError: (message, error) => errors.push({ message, error }),
+      }),
+    ).not.toThrow()
+
+    // The upgrade did NOT falsely report the new version.
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toBe("Failed to install opencode-skill-creator skill")
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe("1.0.0\n")
+
+    // Remove the owned obstacle and retry: the upgrade now commits cleanly.
+    rmSync(join(skillsDir, INSTALL_MANIFEST_FILE), { recursive: true, force: true })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "2.0.0" })
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe("2.0.0\n")
+    const manifest = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(manifest.schema).toBe(1)
+    expect(manifest.packageVersion).toBe("2.0.0")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P42-04 correction: reserved root paths are never owned/pruned, even when a
+// well-formed manifest records them with a matching hash.
+// ---------------------------------------------------------------------------
+
+test("P42-04c2: a user SKILL.md identical to the bundle is still excluded from the inventory", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const bundle = writeBundle(root, "bundle", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "agents/helper.md": "helper\n",
+    })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "1.0.0" })
+
+    // The installed SKILL.md is byte-identical to the bundle's, yet it must
+    // never be recorded as plugin-owned.
+    const manifest = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(manifest.files["SKILL.md"]).toBeUndefined()
+    expect(manifest.files[INSTALL_VERSION_FILE]).toBeUndefined()
+    expect(manifest.files[INSTALL_MANIFEST_FILE]).toBeUndefined()
+    expect(manifest.files["agents/helper.md"]).toBeTypeOf("string")
+
+    // A later upgrade that drops the bundle's SKILL.md must not delete the
+    // installed SKILL.md (it was never owned).
+    const v2 = writeBundle(root, "bundle2", { "agents/helper.md": "helper2\n" })
+    ensureBundledSkillInstalled({ bundledSkillDir: v2, configDir, packageVersion: "2.0.0" })
+    expect(existsSync(join(skillsDir, "SKILL.md"))).toBe(true)
+  })
+})
+
+test("P42-04c3: a forged manifest recording reserved paths with matching hashes cannot prune them", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const bundle = writeBundle(root, "bundle", { "agents/helper.md": "helper\n" })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "1.0.0" })
+
+    // Replace the installed SKILL.md / backup with sentinels and record every
+    // reserved path in a WELL-FORMED manifest with a matching hash.
+    writeFileSync(join(skillsDir, "SKILL.md"), "USER SKILL SENTINEL\n")
+    writeFileSync(join(skillsDir, "SKILL.md.user-backup"), "USER BACKUP SENTINEL\n")
+    const hash = (s: string) => createHash("sha256").update(Buffer.from(s)).digest("hex")
+    const versionContent = readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")
+    const manifestContent = JSON.stringify({
+      schema: 1,
+      packageVersion: "1.0.0",
+      files: {
+        "SKILL.md": hash("USER SKILL SENTINEL\n"),
+        "SKILL.md.user-backup": hash("USER BACKUP SENTINEL\n"),
+        [INSTALL_VERSION_FILE]: hash(versionContent),
+      },
+    })
+    writeFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), manifestContent)
+
+    // Upgrade with a bundle that ships neither SKILL.md nor the backups.
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "2.0.0" })
+
+    // Every reserved file survives (the SKILL.md is not pruned, the backup is
+    // refreshed from the current user SKILL.md by the existing contract, not
+    // deleted), and the forged entries are ignored.
+    expect(readFileSync(join(skillsDir, "SKILL.md"), "utf-8")).toBe("USER SKILL SENTINEL\n")
+    expect(readFileSync(join(skillsDir, "SKILL.md.user-backup"), "utf-8")).toBe("USER SKILL SENTINEL\n")
+    expect(existsSync(join(skillsDir, INSTALL_VERSION_FILE))).toBe(true)
+    expect(existsSync(join(skillsDir, INSTALL_MANIFEST_FILE))).toBe(true)
+    // The rewritten manifest is clean (no reserved entries).
+    const rewritten = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(rewritten.files["SKILL.md"]).toBeUndefined()
+    expect(rewritten.files["SKILL.md.user-backup"]).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P42-04 correction: prune must never follow a symlink — not the managed-dir
+// root, not any intermediate component. Real FS, no mocks.
+// ---------------------------------------------------------------------------
+
+test("P42-04c4: an internal ancestor symlink alias is not pruned through", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const bundleV1 = writeBundle(root, "v1", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "agents/helper.md": "helper\n",
+    })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundleV1, configDir, packageVersion: "1.0.0" })
+
+    // A physical sentinel in a real managed subdirectory, plus an ancestor
+    // symlink `sub -> real` that a recorded `sub/sentinel.md` would follow.
+    mkdirSync(join(skillsDir, "real"), { recursive: true })
+    const physical = join(skillsDir, "real", "sentinel.md")
+    writeFileSync(physical, "PHYSICAL SENTINEL\n")
+    const hash = createHash("sha256").update(readFileSync(physical)).digest("hex")
+    symlinkSync(join(skillsDir, "real"), join(skillsDir, "sub"), "dir")
+    writeFileSync(
+      join(skillsDir, INSTALL_MANIFEST_FILE),
+      JSON.stringify({ schema: 1, packageVersion: "1.0.0", files: { "sub/sentinel.md": hash } }),
+    )
+
+    const bundleV2 = writeBundle(root, "v2", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundleV2, configDir, packageVersion: "2.0.0" })
+
+    // The ancestor symlink was detected; the physical sentinel survived and the
+    // alias was not removed.
+    expect(readFileSync(physical, "utf-8")).toBe("PHYSICAL SENTINEL\n")
+    expect(lstatSync(join(skillsDir, "sub")).isSymbolicLink()).toBe(true)
+  })
+})
+
+test("P42-04c5: an external symlink alias target outside the root is never deleted", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const bundle = writeBundle(root, "bundle", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "1.0.0" })
+
+    const outside = join(root, "outside.md")
+    writeFileSync(outside, "OUTSIDE SENTINEL\n")
+    const hash = createHash("sha256").update(readFileSync(outside)).digest("hex")
+    symlinkSync(outside, join(skillsDir, "external.md"), "file")
+    writeFileSync(
+      join(skillsDir, INSTALL_MANIFEST_FILE),
+      JSON.stringify({ schema: 1, packageVersion: "1.0.0", files: { "external.md": hash } }),
+    )
+
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "2.0.0" })
+
+    expect(readFileSync(outside, "utf-8")).toBe("OUTSIDE SENTINEL\n")
+    expect(lstatSync(join(skillsDir, "external.md")).isSymbolicLink()).toBe(true)
+  })
+})
+
+test("P42-04c6: a symlinked managed-dir root does no pruning even if its canonical root is external", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsRoot = join(configDir, "opencode", "skills")
+    const skillsDir = join(skillsRoot, SKILL_NAME)
+    mkdirSync(skillsRoot, { recursive: true })
+
+    // The managed dir itself is a symlink to an external directory holding a
+    // sentinel that a matching manifest entry could target.
+    const external = join(root, "external-real")
+    mkdirSync(external, { recursive: true })
+    writeFileSync(join(external, "sentinel.md"), "EXTERNAL ROOT SENTINEL\n")
+    const hash = createHash("sha256").update(readFileSync(join(external, "sentinel.md"))).digest("hex")
+    symlinkSync(external, skillsDir, "dir")
+
+    // A legacy-looking install: a version marker and manifest inside the target.
+    writeFileSync(join(external, INSTALL_VERSION_FILE), "0.0.1\n")
+    writeFileSync(
+      join(external, INSTALL_MANIFEST_FILE),
+      JSON.stringify({ schema: 1, packageVersion: "0.0.1", files: { "sentinel.md": hash } }),
+    )
+
+    const bundle = writeBundle(root, "bundle", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "2.0.0" })
+
+    // The symlinked root makes every path resolve elsewhere: no prune happens.
+    expect(readFileSync(join(external, "sentinel.md"), "utf-8")).toBe("EXTERNAL ROOT SENTINEL\n")
+    expect(lstatSync(skillsDir).isSymbolicLink()).toBe(true)
   })
 })
 

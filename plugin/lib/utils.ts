@@ -144,14 +144,18 @@ function parseBlockScalar(
 
   const joined = literal ? joinLiteral(content) : foldLines(content)
   let suffix = ""
-  if (content.length > 0) {
-    // The final content line's own line break is always present; each further
-    // trailing blank line adds one more for "keep", while "clip" collapses them
-    // to a single break and "strip" removes them all.
-    if (chomp === "keep") suffix = "\n".repeat(Math.max(1, trailingBlanks))
-    else if (chomp === "clip") suffix = "\n"
-    // "strip" keeps the empty suffix.
+  if (chomp === "keep") {
+    // Keep preserves the block's trailing breaks: the final content line's own
+    // break (present only when there is content) plus one break per trailing
+    // blank line. A blank-only keep block keeps exactly its blank lines.
+    const breaks = (content.length > 0 ? 1 : 0) + trailingBlanks
+    suffix = "\n".repeat(breaks)
+  } else if (chomp === "clip" && content.length > 0) {
+    // Clip keeps a single final break for a non-empty block; a blank-only clip
+    // block is empty.
+    suffix = "\n"
   }
+  // "strip" (and blank-only "clip") keep the empty suffix.
 
   return { value: joined + suffix, next: index }
 }

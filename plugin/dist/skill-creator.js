@@ -218,12 +218,12 @@ function parseBlockScalar(header, lines, startIndex) {
   const content = body.slice(0, end);
   const joined = literal ? joinLiteral(content) : foldLines(content);
   let suffix = "";
-  if (content.length > 0) {
-    if (chomp === "keep")
-      suffix = `
-`.repeat(Math.max(1, trailingBlanks));
-    else if (chomp === "clip")
-      suffix = `
+  if (chomp === "keep") {
+    const breaks = (content.length > 0 ? 1 : 0) + trailingBlanks;
+    suffix = `
+`.repeat(breaks);
+  } else if (chomp === "clip" && content.length > 0) {
+    suffix = `
 `;
   }
   return { value: joined + suffix, next: index };
@@ -3650,6 +3650,12 @@ var SKILL_NAME = "opencode-skill-creator";
 var LEGACY_SKILL_NAME = "skill-creator";
 var INSTALL_VERSION_FILE = ".opencode-skill-creator-version";
 var INSTALL_MANIFEST_FILE = ".opencode-skill-creator-manifest.json";
+var RESERVED_ROOT_PATHS = new Set([
+  "SKILL.md",
+  "SKILL.md.user-backup",
+  INSTALL_VERSION_FILE,
+  INSTALL_MANIFEST_FILE
+]);
 function copyDirRecursive(src, dest) {
   mkdirSync5(dest, { recursive: true });
   for (const entry of readdirSync5(src)) {
@@ -3709,7 +3715,7 @@ function writeManifest(skillsDir, manifest) {
   writeFileSync7(join9(skillsDir, INSTALL_MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}
 `);
 }
-function listBundleFiles(bundledSkillDir) {
+function listRegularFilesExcludingReserved(root) {
   const files = new Set;
   const walk = (dir) => {
     for (const entry of readdirSync5(dir, { withFileTypes: true })) {
@@ -3717,34 +3723,36 @@ function listBundleFiles(bundledSkillDir) {
       if (entry.isDirectory()) {
         walk(abs);
       } else if (entry.isFile()) {
-        files.add(relative3(bundledSkillDir, abs).split(sep2).join("/"));
+        const rel = relative3(root, abs).split(sep2).join("/");
+        if (RESERVED_ROOT_PATHS.has(rel))
+          continue;
+        files.add(rel);
       }
     }
   };
-  walk(bundledSkillDir);
+  walk(root);
   return files;
 }
-function buildManifest(tmpInstallDir, bundledSkillDir, packageVersion) {
+function listBundleFiles(bundledSkillDir) {
+  return listRegularFilesExcludingReserved(bundledSkillDir);
+}
+function buildManifest(tmpInstallDir, packageVersion) {
   const files = {};
-  const walk = (dir) => {
-    for (const entry of readdirSync5(dir, { withFileTypes: true })) {
-      const abs = join9(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(abs);
-      } else if (entry.isFile()) {
-        files[relative3(tmpInstallDir, abs).split(sep2).join("/")] = sha256File(abs);
-      }
-    }
-  };
-  walk(tmpInstallDir);
-  const bundleSkill = join9(bundledSkillDir, "SKILL.md");
-  if ("SKILL.md" in files && existsSync7(bundleSkill) && sha256File(bundleSkill) !== files["SKILL.md"]) {
-    delete files["SKILL.md"];
+  for (const rel of listRegularFilesExcludingReserved(tmpInstallDir)) {
+    files[rel] = sha256File(join9(tmpInstallDir, rel));
   }
   return { schema: 1, packageVersion, files };
 }
 function pruneStaleManagedFiles(skillsDir, oldManifest, newBundleFiles) {
   if (!oldManifest)
+    return;
+  let rootStats;
+  try {
+    rootStats = lstatSync(skillsDir);
+  } catch {
+    return;
+  }
+  if (rootStats.isSymbolicLink() || !rootStats.isDirectory())
     return;
   const canonicalRoot = (() => {
     try {
@@ -3762,7 +3770,26 @@ function pruneStaleManagedFiles(skillsDir, oldManifest, newBundleFiles) {
   for (const [rel, recordedHash] of Object.entries(oldManifest.files)) {
     if (!isSafeRelativePath(rel))
       continue;
+    if (RESERVED_ROOT_PATHS.has(rel))
+      continue;
     if (newBundleFiles.has(rel))
+      continue;
+    const segments = rel.split("/");
+    let ancestor = skillsDir;
+    let ancestorIsSymlink = false;
+    for (let i = 0;i < segments.length - 1; i++) {
+      ancestor = join9(ancestor, segments[i]);
+      try {
+        if (lstatSync(ancestor).isSymbolicLink()) {
+          ancestorIsSymlink = true;
+          break;
+        }
+      } catch {
+        ancestorIsSymlink = true;
+        break;
+      }
+    }
+    if (ancestorIsSymlink)
       continue;
     const target = join9(skillsDir, rel);
     let stats;
@@ -3851,7 +3878,7 @@ function ensureBundledSkillInstalled(options) {
           copyFileSync(userSkillFile, join9(tmpInstallDir, "SKILL.md"));
         } catch {}
       }
-      const newManifest = buildManifest(tmpInstallDir, options.bundledSkillDir, options.packageVersion);
+      const newManifest = buildManifest(tmpInstallDir, options.packageVersion);
       const newBundleFiles = listBundleFiles(options.bundledSkillDir);
       if (!existsSync7(skillsDir)) {
         renameSync2(tmpInstallDir, skillsDir);
@@ -3859,9 +3886,9 @@ function ensureBundledSkillInstalled(options) {
         pruneStaleManagedFiles(skillsDir, oldManifest, newBundleFiles);
         copyDirRecursive(tmpInstallDir, skillsDir);
       }
+      writeManifest(skillsDir, newManifest);
       writeFileSync7(versionFile, `${options.packageVersion}
 `);
-      writeManifest(skillsDir, newManifest);
     }
     if (existsSync7(legacySkillDir)) {
       archiveLegacySkill({

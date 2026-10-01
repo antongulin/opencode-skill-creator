@@ -117,17 +117,34 @@ test("strip chomping removes trailing breaks, keep preserves them", () => {
   withSkillLines(["---", "name: s", "description: |+", "  only", ...CLOSE], (p) => {
     expect(parseSkillMd(p).description).toBe("only\n")
   })
-  // One blank line after the content; the terminating newline is not a break.
+  // Each blank line after the content is preserved by keep: the content line's
+  // own break plus one more per blank line (exact-byte oracle: only\n\n).
   withSkillLines(["---", "name: s", "description: |+", "  only", "", ...CLOSE], (p) => {
-    expect(parseSkillMd(p).description).toBe("only\n")
+    expect(parseSkillMd(p).description).toBe("only\n\n")
   })
-  // Two blank lines after the content: keep yields two trailing newlines.
   withSkillLines(
     ["---", "name: s", "description: |+", "  only", "", "", ...CLOSE],
     (skillPath) => {
-      expect(parseSkillMd(skillPath).description).toBe("only\n\n")
+      expect(parseSkillMd(skillPath).description).toBe("only\n\n\n")
     },
   )
+})
+
+test("keep chomping on a blank-only block keeps exactly its blank lines", () => {
+  // Exact-byte oracle: a keep block with no content but one blank line is one
+  // newline; a clip/strip blank-only block is empty.
+  withSkillLines(["---", "name: s", "description: |+", "", ...CLOSE], (p) => {
+    expect(parseSkillMd(p).description).toBe("\n")
+  })
+  withSkillLines(["---", "name: s", "description: >+", "", ...CLOSE], (p) => {
+    expect(parseSkillMd(p).description).toBe("\n")
+  })
+  withSkillLines(["---", "name: s", "description: |", "", ...CLOSE], (p) => {
+    expect(parseSkillMd(p).description).toBe("")
+  })
+  withSkillLines(["---", "name: s", "description: |-", "", ...CLOSE], (p) => {
+    expect(parseSkillMd(p).description).toBe("")
+  })
 })
 
 test("strip chomping keeps interior blank lines", () => {
