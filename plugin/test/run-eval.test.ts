@@ -9,6 +9,7 @@ import {
   readlinkSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
   readFileSync,
   realpathSync,
@@ -397,6 +398,137 @@ test("glob reference into the tested skill's directory never reintroduces it", (
   expect(warnings).toEqual([])
   expect(mirrored.some((path) => path.includes("sibling-skill"))).toBe(true)
   expect(mirrored.some((path) => path.includes("tested-skill"))).toBe(false)
+})
+
+// ---------------------------------------------------------------------------
+// R1: the skill-exclusion guard must survive aliases. A purely lexical compare
+// is fooled by a symlink into `.opencode/skills`; the canonical compare blocks
+// both an aliased *directory* reference and an aliased `.opencode` *entry*,
+// while a legitimate sibling reference still mirrors.
+// ---------------------------------------------------------------------------
+
+test("R1: an aliased directory reference never reintroduces the tested skill", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-alias-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-alias-eval-"))
+  try {
+    mkdirSync(join(projectRoot, ".opencode", "skills", "victim-skill"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, ".opencode", "skills", "victim-skill", "SKILL.md"),
+      "---\nname: victim-skill\ndescription: real installed skill\n---\n",
+    )
+    mkdirSync(join(projectRoot, "shared"), { recursive: true })
+    writeFileSync(join(projectRoot, "shared", "rules.md"), "allowed sibling rules\n")
+    // `alias-skills -> .opencode/skills` is a lexical sibling, canonical inside.
+    symlinkSync(join(projectRoot, ".opencode", "skills"), join(projectRoot, "alias-skills"), "dir")
+    writeFileSync(
+      join(projectRoot, "opencode.json"),
+      JSON.stringify({ instructions: ["./alias-skills", "./shared/rules.md"] }),
+    )
+
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "tested-skill")
+
+    // The aliased skills directory and the real skill under it must be absent.
+    expect(existsSync(join(evalRoot, "alias-skills"))).toBe(false)
+    expect(existsSync(join(evalRoot, "alias-skills", "victim-skill", "SKILL.md"))).toBe(false)
+    // A legitimate config sibling is still mirrored with content intact.
+    expect(readFileSync(join(evalRoot, "shared", "rules.md"), "utf-8")).toBe("allowed sibling rules\n")
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("R1: an aliased .opencode entry never reintroduces the tested skill", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-oc-alias-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-oc-alias-eval-"))
+  try {
+    mkdirSync(join(projectRoot, ".opencode", "skills", "victim-skill"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, ".opencode", "skills", "victim-skill", "SKILL.md"),
+      "---\nname: victim-skill\n---\n",
+    )
+    writeFileSync(join(projectRoot, ".opencode", "opencode.json"), "{}\n")
+    // An entry in `.opencode/` that aliases the skills directory itself.
+    symlinkSync(
+      join(projectRoot, ".opencode", "skills"),
+      join(projectRoot, ".opencode", "alias-entry"),
+      "dir",
+    )
+
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "tested-skill")
+
+    expect(existsSync(join(evalRoot, ".opencode", "alias-entry"))).toBe(false)
+    expect(
+      existsSync(join(evalRoot, ".opencode", "alias-entry", "victim-skill", "SKILL.md")),
+    ).toBe(false)
+    // The legitimate `.opencode` document is still mirrored.
+    expect(existsSync(join(evalRoot, ".opencode", "opencode.json"))).toBe(true)
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// R2: a `{file:...}` instruction wrapper is a substitution, not a glob. It must
+// mirror its inner path with zero false "brace alternation" warning, while a
+// genuine brace-alternation pattern still warns.
+// ---------------------------------------------------------------------------
+
+test("R2: a {file:...} instruction mirrors its target with no false brace warning", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-filewrap-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-filewrap-eval-"))
+  const warnings: string[] = []
+  const originalError = console.error
+  try {
+    writeFileSync(join(projectRoot, "wrapped-rules.md"), "wrapped rules\n")
+    writeFileSync(
+      join(projectRoot, "opencode.jsonc"),
+      JSON.stringify({ instructions: ["{file:./wrapped-rules.md}"] }),
+    )
+    console.error = (...args: unknown[]) => warnings.push(args.join(" "))
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "tested-skill")
+    console.error = originalError
+
+    // The wrapper is normalized once: content mirrors, and no false brace warning.
+    expect(warnings).toEqual([])
+    const target = join(evalRoot, "wrapped-rules.md")
+    expect(existsSync(target)).toBe(true)
+    const source = lstatSync(target).isSymbolicLink() ? readlinkSync(target) : target
+    expect(readFileSync(source, "utf-8")).toBe("wrapped rules\n")
+  } finally {
+    console.error = originalError
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("R2: a genuine brace-alternation pattern still warns through {file:...}", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-filewrap-brace-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-filewrap-brace-eval-"))
+  const warnings: string[] = []
+  const originalError = console.error
+  try {
+    mkdirSync(join(projectRoot, "rules"), { recursive: true })
+    writeFileSync(join(projectRoot, "rules", "a.md"), "A rules\n")
+    writeFileSync(join(projectRoot, "rules", "b.md"), "B rules\n")
+    writeFileSync(
+      join(projectRoot, "opencode.jsonc"),
+      JSON.stringify({ instructions: ["{file:rules/{a,b}.md}"] }),
+    )
+    console.error = (...args: unknown[]) => warnings.push(args.join(" "))
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "tested-skill")
+    console.error = originalError
+
+    // The normalized inner path is still a genuine brace pattern: it must warn.
+    expect(warnings.length).toBe(1)
+    expect(warnings[0]).toContain("brace alternation")
+    expect(existsSync(join(evalRoot, "rules"))).toBe(false)
+  } finally {
+    console.error = originalError
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -1106,9 +1238,8 @@ function resolveOpencodeCli(): string | null {
   }
 }
 
-test(
+test.skipIf(resolveOpencodeCli() === null)(
   "the mirrored eval root is effective: a root-config agent resolves and its relative instruction content is present",
-  { skip: resolveOpencodeCli() ? false : "opencode CLI not installed" },
   () => {
     const root = mkdtempSync(join(tmpdir(), "skc-effective-probe-"))
     const project = join(root, "project")

@@ -197,6 +197,7 @@ import {
   mkdtempSync,
   readFileSync as readFileSync3,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -1257,6 +1258,21 @@ function isInsidePath(parent, child) {
     return false;
   return rel !== ".." && !rel.startsWith(`..${sep}`);
 }
+function canonicalizeForExclusion(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+function referencesSkillsRoot(skillsRoot, absolute) {
+  const canonicalRoot = canonicalizeForExclusion(skillsRoot);
+  const canonicalAbsolute = canonicalizeForExclusion(absolute);
+  if (canonicalAbsolute === canonicalRoot || isInsidePath(canonicalRoot, canonicalAbsolute)) {
+    return true;
+  }
+  return absolute === skillsRoot || isInsidePath(skillsRoot, absolute);
+}
 function collectRelativeConfigRefs(projectRoot, configFileName) {
   const text = readFileSync3(join3(projectRoot, configFileName), "utf-8");
   const data = parse2(text);
@@ -1265,6 +1281,8 @@ function collectRelativeConfigRefs(projectRoot, configFileName) {
   const referenced = [];
   const pushLocal = (value) => {
     if (typeof value !== "string" || !value)
+      return;
+    if (/^\{file:.+\}$/.test(value))
       return;
     if (value.startsWith("/") || value.startsWith("~") || value.includes("://"))
       return;
@@ -1410,7 +1428,7 @@ function mirrorRootConfigDocuments(projectRoot, evalRoot) {
     linkOrCopyConfigEntry(source, join3(evalRoot, name), false);
     for (const reference of collectRelativeConfigRefs(projectRoot, name)) {
       for (const absolute of expandConfigReference(projectRoot, reference)) {
-        if (absolute === skillsRoot || isInsidePath(skillsRoot, absolute))
+        if (referencesSkillsRoot(skillsRoot, absolute))
           continue;
         const relativeTarget = relative(projectRoot, absolute);
         const target = join3(evalRoot, relativeTarget);
@@ -1426,8 +1444,11 @@ function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName) {
   if (existsSync2(sourceOpenCode)) {
     const targetOpenCode = join3(evalRoot, ".opencode");
     mkdirSync(targetOpenCode, { recursive: true });
+    const sourceSkillsRoot = join3(sourceOpenCode, "skills");
     for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
       if (entry.name === "skills")
+        continue;
+      if (referencesSkillsRoot(sourceSkillsRoot, join3(sourceOpenCode, entry.name)))
         continue;
       linkOrCopyConfigEntry(join3(sourceOpenCode, entry.name), join3(targetOpenCode, entry.name), entry.isDirectory());
     }

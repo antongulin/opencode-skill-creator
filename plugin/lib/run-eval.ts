@@ -17,6 +17,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -31,7 +32,7 @@ import { buildOpencodeEnv, isFailedProcess, runProcess } from "./process"
 
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
-/** Config documents a project may place at its root, in precedence order. */
+/** Config documents a project may place at its root; all present ones are mirrored. */
 const ROOT_CONFIG_FILES = ["opencode.json", "opencode.jsonc"] as const
 
 /**
@@ -313,6 +314,37 @@ function isInsidePath(parent: string, child: string): boolean {
 }
 
 /**
+ * Canonicalize a path for the skill-exclusion guard, resolving symlinks so an
+ * alias such as `alias-skills -> .opencode/skills` cannot smuggle the real
+ * skill back into the isolated eval root past a purely lexical check. `isInsidePath`
+ * only compares path strings and is therefore fooled by aliases.
+ */
+function canonicalizeForExclusion(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+/**
+ * True when `absolute` is the canonical `.opencode/skills` directory itself or
+ * lives inside it. On a realpath failure the lexical form is still checked, so
+ * the guard fails closed (a forbidden path stays excluded) rather than open.
+ */
+function referencesSkillsRoot(skillsRoot: string, absolute: string): boolean {
+  const canonicalRoot = canonicalizeForExclusion(skillsRoot)
+  const canonicalAbsolute = canonicalizeForExclusion(absolute)
+  if (
+    canonicalAbsolute === canonicalRoot ||
+    isInsidePath(canonicalRoot, canonicalAbsolute)
+  ) {
+    return true
+  }
+  return absolute === skillsRoot || isInsidePath(skillsRoot, absolute)
+}
+
+/**
  * Collect the local paths a root config document references (`instructions`
  * entries and `{file:...}` substitutions). Returns each entry unchanged so the
  * caller can distinguish literal paths from glob patterns; absolute paths,
@@ -326,6 +358,11 @@ function collectRelativeConfigRefs(projectRoot: string, configFileName: string):
   const referenced: string[] = []
   const pushLocal = (value: unknown) => {
     if (typeof value !== "string" || !value) return
+    // A `{file:...}` instruction is a substitution wrapper, not a path. It is
+    // normalized to its inner path exactly once by `fromFiles` below, so feeding
+    // the raw wrapper to glob detection here would emit a false
+    // "brace alternation ... not supported" warning for a supported reference.
+    if (/^\{file:.+\}$/.test(value)) return
     if (value.startsWith("/") || value.startsWith("~") || value.includes("://")) return
     referenced.push(value)
   }
@@ -533,8 +570,9 @@ function mirrorRootConfigDocuments(
     for (const reference of collectRelativeConfigRefs(projectRoot, name)) {
       for (const absolute of expandConfigReference(projectRoot, reference)) {
         // Never reintroduce the tested skill or anything under the project's
-        // skills directory into the isolated eval root.
-        if (absolute === skillsRoot || isInsidePath(skillsRoot, absolute)) continue
+        // skills directory into the isolated eval root. Compare canonical
+        // paths so an alias (symlink) into `.opencode/skills` is caught too.
+        if (referencesSkillsRoot(skillsRoot, absolute)) continue
         const relativeTarget = relative(projectRoot, absolute)
         const target = join(evalRoot, relativeTarget)
         if (!isInsidePath(evalRoot, target)) continue
@@ -558,8 +596,13 @@ export function symlinkProjectOpenCodeConfig(
     const targetOpenCode = join(evalRoot, ".opencode")
     mkdirSync(targetOpenCode, { recursive: true })
 
+    const sourceSkillsRoot = join(sourceOpenCode, "skills")
     for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
       if (entry.name === "skills") continue
+      // An entry that is an alias (symlink) into `.opencode/skills` would
+      // otherwise mirror the real skills directory under a different name and
+      // reintroduce the tested skill. Compare canonical paths.
+      if (referencesSkillsRoot(sourceSkillsRoot, join(sourceOpenCode, entry.name))) continue
       linkOrCopyConfigEntry(
         join(sourceOpenCode, entry.name),
         join(targetOpenCode, entry.name),
