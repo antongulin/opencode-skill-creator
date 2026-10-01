@@ -17,6 +17,25 @@ const withSkill = <T>(frontmatter: string, fn: (skillPath: string) => T): T => {
   }
 }
 
+// Windows checkouts (core.autocrlf=true) write EVERY line ending — the
+// frontmatter delimiters included — as CRLF. Build the whole document that way
+// so the fixture has no bare LF that would make the test pass by accident.
+const withCrlfSkill = <T>(frontmatter: string, fn: (skillPath: string) => T): T => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-creator-validate-"))
+  try {
+    mkdirSync(dir, { recursive: true })
+    const contents = `---\n${frontmatter}\n---\n\n# Test Skill\n`.split("\n").join("\r\n")
+    // Fixture sanity: no bare LF and no lone CR remain (a full CRLF document).
+    const stripped = contents.replace(/\r\n/g, "")
+    expect(stripped.includes("\n")).toBe(false)
+    expect(stripped.includes("\r")).toBe(false)
+    writeFileSync(join(dir, "SKILL.md"), contents)
+    return fn(dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 test("quoted description containing colon-space passes", () => {
   withSkill(
     `name: pdf-reader
@@ -166,6 +185,48 @@ description: Use when reading docs.`,
       expect(result.valid).toBe(false)
       expect(result.message).toContain("name")
       expect(result.message).toContain("line 2")
+      expect(result.message).toContain("Hint: quote the value")
+    },
+  )
+})
+
+test("CRLF frontmatter passes validation", () => {
+  withCrlfSkill(
+    `name: pdf-reader
+description: "Use for PDF files: reading, extracting."`,
+    (skillPath) => {
+      expect(validateSkill(skillPath)).toEqual({
+        valid: true,
+        message: "Skill is valid!",
+      })
+    },
+  )
+})
+
+test("CRLF block scalar description passes validation", () => {
+  withCrlfSkill(
+    `name: pdf-reader
+description: |2-
+  Use for PDF files: reading, extracting.`,
+    (skillPath) => {
+      expect(validateSkill(skillPath)).toEqual({
+        valid: true,
+        message: "Skill is valid!",
+      })
+    },
+  )
+})
+
+test("CRLF unquoted colon-space still fails with correct line number", () => {
+  withCrlfSkill(
+    `name: pdf-reader
+description: Use for PDF files: reading, extracting.`,
+    (skillPath) => {
+      const result = validateSkill(skillPath)
+
+      expect(result.valid).toBe(false)
+      expect(result.message).toContain("description")
+      expect(result.message).toContain("line 3")
       expect(result.message).toContain("Hint: quote the value")
     },
   )
