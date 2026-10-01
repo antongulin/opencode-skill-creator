@@ -13,7 +13,7 @@ import { join } from "path"
 import { tmpdir } from "os"
 
 import { parseSkillMd } from "./utils"
-import { buildEvalWarnings, findProjectRoot, runEval } from "./run-eval"
+import { abortError, buildEvalWarnings, runEval } from "./run-eval"
 import { improveDescription } from "./improve-description"
 import { generateHtml } from "./report"
 
@@ -95,6 +95,19 @@ export interface RunLoopOptions {
   verbose: boolean
   liveReportPath?: string | null
   logDir?: string | null
+  /**
+   * Project root whose config/skills the loop evaluates against. Required so a
+   * V2 instance evaluates its own location rather than the process cwd.
+   */
+  projectRoot: string
+  /** Caller-owned cancellation; propagated to eval and improvement children. */
+  signal?: AbortSignal
+  /**
+   * The tested skill's own directory (the loop's candidate). Kept out of the
+   * isolated eval root so its original body cannot leak. Omitted -> no extra
+   * exclusion.
+   */
+  excludedSkillPath?: string
 }
 
 export interface LoopHistoryEntry extends HistoryEntry {
@@ -150,11 +163,17 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     verbose,
     liveReportPath,
     logDir,
+    projectRoot,
+    signal,
+    excludedSkillPath,
   } = opts
 
-  const projectRoot = findProjectRoot()
+  if (signal?.aborted) throw abortError()
   const { name, description: originalDescription, fullContent: content } =
     parseSkillMd(skillPath)
+  // The loop's own candidate is always the skill under test; exclude it (and
+  // any ancestor reference that would copy it) from the isolated eval root.
+  const excludePath = excludedSkillPath ?? skillPath
   let currentDescription = descriptionOverride ?? originalDescription
 
   // Split into train/test if holdout > 0
@@ -176,6 +195,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
   let exitReason = "unknown"
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
+    if (signal?.aborted) throw abortError()
     if (verbose) {
       console.error(`\n${"=".repeat(60)}`)
       console.error(`Iteration ${iteration}/${maxIterations}`)
@@ -198,6 +218,8 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
       triggerOnly,
       model,
       agent,
+      signal,
+      excludedSkillPath: excludePath,
     })
     const evalElapsed = (Date.now() - t0) / 1000
 
@@ -321,6 +343,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     }
 
     // Improve the description based on train results
+    if (signal?.aborted) throw abortError()
     if (verbose) {
       console.error("\nImproving description...")
     }
@@ -344,6 +367,8 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
       model,
       logDir,
       iteration,
+      projectRoot,
+      signal,
     })
     const improveElapsed = (Date.now() - t1) / 1000
 

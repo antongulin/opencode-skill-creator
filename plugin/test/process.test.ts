@@ -1,6 +1,28 @@
 import { expect, test } from "bun:test"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { isFailedExitCode, isFailedProcess, runProcess } from "../lib/process"
+
+/** Poll for a readiness file the child writes after it has started. */
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!existsSync(path) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  if (!existsSync(path)) throw new Error(`ready marker not written: ${path}`)
+}
+
+/** Observation only: is this PID still alive? Never mutates the process. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 
 test("isFailedExitCode treats only defined non-zero exit codes as failures", () => {
   expect(isFailedExitCode(1)).toBe(true)
@@ -103,4 +125,133 @@ test("runProcess can stop early from stdout parsing without timing out", async (
   expect(result.timedOut).toBe(false)
   expect(result.stdout).toContain("triggered")
   expect(Date.now() - startedAt).toBeLessThan(1_000)
+})
+
+test("runProcess kills the child and reports aborted when the signal aborts", async () => {
+  const controller = new AbortController()
+  const readyDir = mkdtempSync(join(tmpdir(), "osc-abort-ready-"))
+  const ready = join(readyDir, "ready")
+  const pidFile = join(readyDir, "pid")
+  let pending: Promise<unknown> | undefined
+  let childPid: number | null = null
+  try {
+    const startedAt = Date.now()
+    pending = runProcess(
+      [
+        "node",
+        "-e",
+        `require("fs").writeFileSync(process.env.SKC_PID, String(process.pid)); require("fs").writeFileSync(process.env.SKC_READY, "1"); setTimeout(() => undefined, 30_000)`,
+      ],
+      {
+        timeoutMs: 60_000,
+        signal: controller.signal,
+        env: { ...process.env, SKC_READY: ready, SKC_PID: pidFile },
+      },
+    )
+
+    // Deterministic readiness instead of an arbitrary delay: abort only once the
+    // child has actually spawned and signalled it is running.
+    await waitForFile(ready)
+    childPid = Number(readFileSync(pidFile, "utf-8"))
+
+    controller.abort()
+    const result = (await pending) as { aborted: boolean; timedOut: boolean }
+
+    expect(result.aborted).toBe(true)
+    expect(result.timedOut).toBe(false)
+    // Must not have awaited the full 30 s child lifetime.
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    // Observation BEFORE any cleanup: the runProcess abort itself must have
+    // killed the child. Killing here would let a non-cancelling bug pass.
+    expect(pidAlive(childPid)).toBe(false)
+  } finally {
+    // Drain/abort even if a readiness or assertion step failed, then remove the
+    // owned PID (only this PID) and the readiness dir.
+    controller.abort()
+    if (pending) {
+      try {
+        await pending
+      } catch {
+        /* expected abort */
+      }
+    }
+    if (childPid !== null && pidAlive(childPid)) {
+      try {
+        process.kill(childPid, "SIGKILL")
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(readyDir, { recursive: true, force: true })
+  }
+})
+
+test("runProcess force-kills an abort-ignoring child after the grace period", async () => {
+  const controller = new AbortController()
+  const readyDir = mkdtempSync(join(tmpdir(), "osc-kill-ready-"))
+  const ready = join(readyDir, "ready")
+  const pidFile = join(readyDir, "pid")
+  let pending: Promise<unknown> | undefined
+  let childPid: number | null = null
+  try {
+    const startedAt = Date.now()
+    pending = runProcess(
+      [
+        "node",
+        "-e",
+        // The SIGTERM handler is installed BEFORE the PID/ready markers, so once
+        // the ready file exists the abort's SIGTERM is guaranteed to be ignored
+        // and the SIGKILL escalation is what actually ends the child.
+        `process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.env.SKC_PID, String(process.pid)); require("fs").writeFileSync(process.env.SKC_READY, "1"); setTimeout(() => undefined, 30_000)`,
+      ],
+      {
+        timeoutMs: 60_000,
+        killGraceMs: 50,
+        signal: controller.signal,
+        env: { ...process.env, SKC_READY: ready, SKC_PID: pidFile },
+      },
+    )
+
+    await waitForFile(ready)
+    childPid = Number(readFileSync(pidFile, "utf-8"))
+
+    controller.abort()
+    const result = (await pending) as { aborted: boolean }
+
+    expect(result.aborted).toBe(true)
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    // Observation BEFORE cleanup proves the escalation actually killed the
+    // stubborn child, not the finally block.
+    expect(pidAlive(childPid)).toBe(false)
+  } finally {
+    controller.abort()
+    if (pending) {
+      try {
+        await pending
+      } catch {
+        /* expected abort */
+      }
+    }
+    if (childPid !== null && pidAlive(childPid)) {
+      try {
+        process.kill(childPid, "SIGKILL")
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(readyDir, { recursive: true, force: true })
+  }
+})
+
+test("runProcess does not spawn when the signal is already aborted", async () => {
+  const controller = new AbortController()
+  controller.abort()
+
+  const result = await runProcess(["node", "-e", "process.exit(1)"], {
+    timeoutMs: 1_000,
+    signal: controller.signal,
+  })
+
+  expect(result.aborted).toBe(true)
+  expect(result.exitCode).toBe(null)
 })

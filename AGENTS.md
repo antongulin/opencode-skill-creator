@@ -104,6 +104,17 @@ When the user requests a durable behavior change, record it here or in the relev
   temp dirs, browser pages). A worker that opened a browser page closes it before
   finishing; the lead verifies.
 
+### Credit adopted contributor work in release notes
+
+- When an external contributor's code, tests, or design is adopted — reworked or
+  not — credit the contributor by handle and reference the source (PR/commit) in
+  the release notes and the commit trailer (`Co-authored-by:`).
+- Credit only work actually adopted. Do not name contributors for ideas that were
+  rejected or not merged, and do not hardcode a contributor into unrelated
+  releases: derive the credit from the work each release actually contains.
+- Release notes are authored during the release/delivery stage for the revision
+  being published; keep the attribution truthful per release.
+
 ## Child DOX Index
 
 The root `AGENTS.md` owns cross-cutting repository rules. No child `AGENTS.md` files exist;

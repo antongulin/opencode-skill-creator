@@ -1,10 +1,10 @@
 // @bun
 // skill-creator.ts
 import { tool } from "@opencode-ai/plugin";
-import { join as join10, dirname as dirname3, isAbsolute, relative as relative2, sep } from "path";
+import { join as join10, dirname as dirname3, isAbsolute as isAbsolute2, relative as relative3, sep as sep2 } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
-import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync7, rmSync as rmSync3, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, rmSync as rmSync3, writeFileSync as writeFileSync8 } from "fs";
 
 // lib/validate.ts
 import { existsSync, readFileSync } from "fs";
@@ -195,14 +195,821 @@ import {
   existsSync as existsSync2,
   mkdirSync,
   mkdtempSync,
+  readFileSync as readFileSync3,
   readdirSync,
+  realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync
 } from "fs";
-import { dirname, join as join3, parse } from "path";
+import { dirname, isAbsolute, join as join3, parse as parse3, relative, resolve, sep } from "path";
 import { randomBytes } from "crypto";
 import { tmpdir as osTmpdir } from "os";
+
+// node_modules/jsonc-parser/lib/esm/impl/scanner.js
+function createScanner(text, ignoreTrivia = false) {
+  const len = text.length;
+  let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
+  function scanHexDigits(count, exact) {
+    let digits = 0;
+    let value = 0;
+    while (digits < count || !exact) {
+      let ch = text.charCodeAt(pos);
+      if (ch >= 48 && ch <= 57) {
+        value = value * 16 + ch - 48;
+      } else if (ch >= 65 && ch <= 70) {
+        value = value * 16 + ch - 65 + 10;
+      } else if (ch >= 97 && ch <= 102) {
+        value = value * 16 + ch - 97 + 10;
+      } else {
+        break;
+      }
+      pos++;
+      digits++;
+    }
+    if (digits < count) {
+      value = -1;
+    }
+    return value;
+  }
+  function setPosition(newPosition) {
+    pos = newPosition;
+    value = "";
+    tokenOffset = 0;
+    token = 16;
+    scanError = 0;
+  }
+  function scanNumber() {
+    let start = pos;
+    if (text.charCodeAt(pos) === 48) {
+      pos++;
+    } else {
+      pos++;
+      while (pos < text.length && isDigit(text.charCodeAt(pos))) {
+        pos++;
+      }
+    }
+    if (pos < text.length && text.charCodeAt(pos) === 46) {
+      pos++;
+      if (pos < text.length && isDigit(text.charCodeAt(pos))) {
+        pos++;
+        while (pos < text.length && isDigit(text.charCodeAt(pos))) {
+          pos++;
+        }
+      } else {
+        scanError = 3;
+        return text.substring(start, pos);
+      }
+    }
+    let end = pos;
+    if (pos < text.length && (text.charCodeAt(pos) === 69 || text.charCodeAt(pos) === 101)) {
+      pos++;
+      if (pos < text.length && text.charCodeAt(pos) === 43 || text.charCodeAt(pos) === 45) {
+        pos++;
+      }
+      if (pos < text.length && isDigit(text.charCodeAt(pos))) {
+        pos++;
+        while (pos < text.length && isDigit(text.charCodeAt(pos))) {
+          pos++;
+        }
+        end = pos;
+      } else {
+        scanError = 3;
+      }
+    }
+    return text.substring(start, end);
+  }
+  function scanString() {
+    let result = "", start = pos;
+    while (true) {
+      if (pos >= len) {
+        result += text.substring(start, pos);
+        scanError = 2;
+        break;
+      }
+      const ch = text.charCodeAt(pos);
+      if (ch === 34) {
+        result += text.substring(start, pos);
+        pos++;
+        break;
+      }
+      if (ch === 92) {
+        result += text.substring(start, pos);
+        pos++;
+        if (pos >= len) {
+          scanError = 2;
+          break;
+        }
+        const ch2 = text.charCodeAt(pos++);
+        switch (ch2) {
+          case 34:
+            result += '"';
+            break;
+          case 92:
+            result += "\\";
+            break;
+          case 47:
+            result += "/";
+            break;
+          case 98:
+            result += "\b";
+            break;
+          case 102:
+            result += "\f";
+            break;
+          case 110:
+            result += `
+`;
+            break;
+          case 114:
+            result += "\r";
+            break;
+          case 116:
+            result += "\t";
+            break;
+          case 117:
+            const ch3 = scanHexDigits(4, true);
+            if (ch3 >= 0) {
+              result += String.fromCharCode(ch3);
+            } else {
+              scanError = 4;
+            }
+            break;
+          default:
+            scanError = 5;
+        }
+        start = pos;
+        continue;
+      }
+      if (ch >= 0 && ch <= 31) {
+        if (isLineBreak(ch)) {
+          result += text.substring(start, pos);
+          scanError = 2;
+          break;
+        } else {
+          scanError = 6;
+        }
+      }
+      pos++;
+    }
+    return result;
+  }
+  function scanNext() {
+    value = "";
+    scanError = 0;
+    tokenOffset = pos;
+    lineStartOffset = lineNumber;
+    prevTokenLineStartOffset = tokenLineStartOffset;
+    if (pos >= len) {
+      tokenOffset = len;
+      return token = 17;
+    }
+    let code = text.charCodeAt(pos);
+    if (isWhiteSpace(code)) {
+      do {
+        pos++;
+        value += String.fromCharCode(code);
+        code = text.charCodeAt(pos);
+      } while (isWhiteSpace(code));
+      return token = 15;
+    }
+    if (isLineBreak(code)) {
+      pos++;
+      value += String.fromCharCode(code);
+      if (code === 13 && text.charCodeAt(pos) === 10) {
+        pos++;
+        value += `
+`;
+      }
+      lineNumber++;
+      tokenLineStartOffset = pos;
+      return token = 14;
+    }
+    switch (code) {
+      case 123:
+        pos++;
+        return token = 1;
+      case 125:
+        pos++;
+        return token = 2;
+      case 91:
+        pos++;
+        return token = 3;
+      case 93:
+        pos++;
+        return token = 4;
+      case 58:
+        pos++;
+        return token = 6;
+      case 44:
+        pos++;
+        return token = 5;
+      case 34:
+        pos++;
+        value = scanString();
+        return token = 10;
+      case 47:
+        const start = pos - 1;
+        if (text.charCodeAt(pos + 1) === 47) {
+          pos += 2;
+          while (pos < len) {
+            if (isLineBreak(text.charCodeAt(pos))) {
+              break;
+            }
+            pos++;
+          }
+          value = text.substring(start, pos);
+          return token = 12;
+        }
+        if (text.charCodeAt(pos + 1) === 42) {
+          pos += 2;
+          const safeLength = len - 1;
+          let commentClosed = false;
+          while (pos < safeLength) {
+            const ch = text.charCodeAt(pos);
+            if (ch === 42 && text.charCodeAt(pos + 1) === 47) {
+              pos += 2;
+              commentClosed = true;
+              break;
+            }
+            pos++;
+            if (isLineBreak(ch)) {
+              if (ch === 13 && text.charCodeAt(pos) === 10) {
+                pos++;
+              }
+              lineNumber++;
+              tokenLineStartOffset = pos;
+            }
+          }
+          if (!commentClosed) {
+            pos++;
+            scanError = 1;
+          }
+          value = text.substring(start, pos);
+          return token = 13;
+        }
+        value += String.fromCharCode(code);
+        pos++;
+        return token = 16;
+      case 45:
+        value += String.fromCharCode(code);
+        pos++;
+        if (pos === len || !isDigit(text.charCodeAt(pos))) {
+          return token = 16;
+        }
+      case 48:
+      case 49:
+      case 50:
+      case 51:
+      case 52:
+      case 53:
+      case 54:
+      case 55:
+      case 56:
+      case 57:
+        value += scanNumber();
+        return token = 11;
+      default:
+        while (pos < len && isUnknownContentCharacter(code)) {
+          pos++;
+          code = text.charCodeAt(pos);
+        }
+        if (tokenOffset !== pos) {
+          value = text.substring(tokenOffset, pos);
+          switch (value) {
+            case "true":
+              return token = 8;
+            case "false":
+              return token = 9;
+            case "null":
+              return token = 7;
+          }
+          return token = 16;
+        }
+        value += String.fromCharCode(code);
+        pos++;
+        return token = 16;
+    }
+  }
+  function isUnknownContentCharacter(code) {
+    if (isWhiteSpace(code) || isLineBreak(code)) {
+      return false;
+    }
+    switch (code) {
+      case 125:
+      case 93:
+      case 123:
+      case 91:
+      case 34:
+      case 58:
+      case 44:
+      case 47:
+        return false;
+    }
+    return true;
+  }
+  function scanNextNonTrivia() {
+    let result;
+    do {
+      result = scanNext();
+    } while (result >= 12 && result <= 15);
+    return result;
+  }
+  return {
+    setPosition,
+    getPosition: () => pos,
+    scan: ignoreTrivia ? scanNextNonTrivia : scanNext,
+    getToken: () => token,
+    getTokenValue: () => value,
+    getTokenOffset: () => tokenOffset,
+    getTokenLength: () => pos - tokenOffset,
+    getTokenStartLine: () => lineStartOffset,
+    getTokenStartCharacter: () => tokenOffset - prevTokenLineStartOffset,
+    getTokenError: () => scanError
+  };
+}
+function isWhiteSpace(ch) {
+  return ch === 32 || ch === 9;
+}
+function isLineBreak(ch) {
+  return ch === 10 || ch === 13;
+}
+function isDigit(ch) {
+  return ch >= 48 && ch <= 57;
+}
+var CharacterCodes;
+(function(CharacterCodes) {
+  CharacterCodes[CharacterCodes["lineFeed"] = 10] = "lineFeed";
+  CharacterCodes[CharacterCodes["carriageReturn"] = 13] = "carriageReturn";
+  CharacterCodes[CharacterCodes["space"] = 32] = "space";
+  CharacterCodes[CharacterCodes["_0"] = 48] = "_0";
+  CharacterCodes[CharacterCodes["_1"] = 49] = "_1";
+  CharacterCodes[CharacterCodes["_2"] = 50] = "_2";
+  CharacterCodes[CharacterCodes["_3"] = 51] = "_3";
+  CharacterCodes[CharacterCodes["_4"] = 52] = "_4";
+  CharacterCodes[CharacterCodes["_5"] = 53] = "_5";
+  CharacterCodes[CharacterCodes["_6"] = 54] = "_6";
+  CharacterCodes[CharacterCodes["_7"] = 55] = "_7";
+  CharacterCodes[CharacterCodes["_8"] = 56] = "_8";
+  CharacterCodes[CharacterCodes["_9"] = 57] = "_9";
+  CharacterCodes[CharacterCodes["a"] = 97] = "a";
+  CharacterCodes[CharacterCodes["b"] = 98] = "b";
+  CharacterCodes[CharacterCodes["c"] = 99] = "c";
+  CharacterCodes[CharacterCodes["d"] = 100] = "d";
+  CharacterCodes[CharacterCodes["e"] = 101] = "e";
+  CharacterCodes[CharacterCodes["f"] = 102] = "f";
+  CharacterCodes[CharacterCodes["g"] = 103] = "g";
+  CharacterCodes[CharacterCodes["h"] = 104] = "h";
+  CharacterCodes[CharacterCodes["i"] = 105] = "i";
+  CharacterCodes[CharacterCodes["j"] = 106] = "j";
+  CharacterCodes[CharacterCodes["k"] = 107] = "k";
+  CharacterCodes[CharacterCodes["l"] = 108] = "l";
+  CharacterCodes[CharacterCodes["m"] = 109] = "m";
+  CharacterCodes[CharacterCodes["n"] = 110] = "n";
+  CharacterCodes[CharacterCodes["o"] = 111] = "o";
+  CharacterCodes[CharacterCodes["p"] = 112] = "p";
+  CharacterCodes[CharacterCodes["q"] = 113] = "q";
+  CharacterCodes[CharacterCodes["r"] = 114] = "r";
+  CharacterCodes[CharacterCodes["s"] = 115] = "s";
+  CharacterCodes[CharacterCodes["t"] = 116] = "t";
+  CharacterCodes[CharacterCodes["u"] = 117] = "u";
+  CharacterCodes[CharacterCodes["v"] = 118] = "v";
+  CharacterCodes[CharacterCodes["w"] = 119] = "w";
+  CharacterCodes[CharacterCodes["x"] = 120] = "x";
+  CharacterCodes[CharacterCodes["y"] = 121] = "y";
+  CharacterCodes[CharacterCodes["z"] = 122] = "z";
+  CharacterCodes[CharacterCodes["A"] = 65] = "A";
+  CharacterCodes[CharacterCodes["B"] = 66] = "B";
+  CharacterCodes[CharacterCodes["C"] = 67] = "C";
+  CharacterCodes[CharacterCodes["D"] = 68] = "D";
+  CharacterCodes[CharacterCodes["E"] = 69] = "E";
+  CharacterCodes[CharacterCodes["F"] = 70] = "F";
+  CharacterCodes[CharacterCodes["G"] = 71] = "G";
+  CharacterCodes[CharacterCodes["H"] = 72] = "H";
+  CharacterCodes[CharacterCodes["I"] = 73] = "I";
+  CharacterCodes[CharacterCodes["J"] = 74] = "J";
+  CharacterCodes[CharacterCodes["K"] = 75] = "K";
+  CharacterCodes[CharacterCodes["L"] = 76] = "L";
+  CharacterCodes[CharacterCodes["M"] = 77] = "M";
+  CharacterCodes[CharacterCodes["N"] = 78] = "N";
+  CharacterCodes[CharacterCodes["O"] = 79] = "O";
+  CharacterCodes[CharacterCodes["P"] = 80] = "P";
+  CharacterCodes[CharacterCodes["Q"] = 81] = "Q";
+  CharacterCodes[CharacterCodes["R"] = 82] = "R";
+  CharacterCodes[CharacterCodes["S"] = 83] = "S";
+  CharacterCodes[CharacterCodes["T"] = 84] = "T";
+  CharacterCodes[CharacterCodes["U"] = 85] = "U";
+  CharacterCodes[CharacterCodes["V"] = 86] = "V";
+  CharacterCodes[CharacterCodes["W"] = 87] = "W";
+  CharacterCodes[CharacterCodes["X"] = 88] = "X";
+  CharacterCodes[CharacterCodes["Y"] = 89] = "Y";
+  CharacterCodes[CharacterCodes["Z"] = 90] = "Z";
+  CharacterCodes[CharacterCodes["asterisk"] = 42] = "asterisk";
+  CharacterCodes[CharacterCodes["backslash"] = 92] = "backslash";
+  CharacterCodes[CharacterCodes["closeBrace"] = 125] = "closeBrace";
+  CharacterCodes[CharacterCodes["closeBracket"] = 93] = "closeBracket";
+  CharacterCodes[CharacterCodes["colon"] = 58] = "colon";
+  CharacterCodes[CharacterCodes["comma"] = 44] = "comma";
+  CharacterCodes[CharacterCodes["dot"] = 46] = "dot";
+  CharacterCodes[CharacterCodes["doubleQuote"] = 34] = "doubleQuote";
+  CharacterCodes[CharacterCodes["minus"] = 45] = "minus";
+  CharacterCodes[CharacterCodes["openBrace"] = 123] = "openBrace";
+  CharacterCodes[CharacterCodes["openBracket"] = 91] = "openBracket";
+  CharacterCodes[CharacterCodes["plus"] = 43] = "plus";
+  CharacterCodes[CharacterCodes["slash"] = 47] = "slash";
+  CharacterCodes[CharacterCodes["formFeed"] = 12] = "formFeed";
+  CharacterCodes[CharacterCodes["tab"] = 9] = "tab";
+})(CharacterCodes || (CharacterCodes = {}));
+
+// node_modules/jsonc-parser/lib/esm/impl/string-intern.js
+var cachedSpaces = new Array(20).fill(0).map((_, index) => {
+  return " ".repeat(index);
+});
+var maxCachedValues = 200;
+var cachedBreakLinesWithSpaces = {
+  " ": {
+    "\n": new Array(maxCachedValues).fill(0).map((_, index) => {
+      return `
+` + " ".repeat(index);
+    }),
+    "\r": new Array(maxCachedValues).fill(0).map((_, index) => {
+      return "\r" + " ".repeat(index);
+    }),
+    "\r\n": new Array(maxCachedValues).fill(0).map((_, index) => {
+      return `\r
+` + " ".repeat(index);
+    })
+  },
+  "\t": {
+    "\n": new Array(maxCachedValues).fill(0).map((_, index) => {
+      return `
+` + "\t".repeat(index);
+    }),
+    "\r": new Array(maxCachedValues).fill(0).map((_, index) => {
+      return "\r" + "\t".repeat(index);
+    }),
+    "\r\n": new Array(maxCachedValues).fill(0).map((_, index) => {
+      return `\r
+` + "\t".repeat(index);
+    })
+  }
+};
+
+// node_modules/jsonc-parser/lib/esm/impl/parser.js
+var ParseOptions;
+(function(ParseOptions) {
+  ParseOptions.DEFAULT = {
+    allowTrailingComma: false
+  };
+})(ParseOptions || (ParseOptions = {}));
+function parse(text, errors = [], options = ParseOptions.DEFAULT) {
+  let currentProperty = null;
+  let currentParent = [];
+  const previousParents = [];
+  function onValue(value) {
+    if (Array.isArray(currentParent)) {
+      currentParent.push(value);
+    } else if (currentProperty !== null) {
+      currentParent[currentProperty] = value;
+    }
+  }
+  const visitor = {
+    onObjectBegin: () => {
+      const object = {};
+      onValue(object);
+      previousParents.push(currentParent);
+      currentParent = object;
+      currentProperty = null;
+    },
+    onObjectProperty: (name) => {
+      currentProperty = name;
+    },
+    onObjectEnd: () => {
+      currentParent = previousParents.pop();
+    },
+    onArrayBegin: () => {
+      const array = [];
+      onValue(array);
+      previousParents.push(currentParent);
+      currentParent = array;
+      currentProperty = null;
+    },
+    onArrayEnd: () => {
+      currentParent = previousParents.pop();
+    },
+    onLiteralValue: onValue,
+    onError: (error, offset, length) => {
+      errors.push({ error, offset, length });
+    }
+  };
+  visit(text, visitor, options);
+  return currentParent[0];
+}
+function visit(text, visitor, options = ParseOptions.DEFAULT) {
+  const _scanner = createScanner(text, false);
+  const _jsonPath = [];
+  let suppressedCallbacks = 0;
+  function toNoArgVisit(visitFunction) {
+    return visitFunction ? () => suppressedCallbacks === 0 && visitFunction(_scanner.getTokenOffset(), _scanner.getTokenLength(), _scanner.getTokenStartLine(), _scanner.getTokenStartCharacter()) : () => true;
+  }
+  function toOneArgVisit(visitFunction) {
+    return visitFunction ? (arg) => suppressedCallbacks === 0 && visitFunction(arg, _scanner.getTokenOffset(), _scanner.getTokenLength(), _scanner.getTokenStartLine(), _scanner.getTokenStartCharacter()) : () => true;
+  }
+  function toOneArgVisitWithPath(visitFunction) {
+    return visitFunction ? (arg) => suppressedCallbacks === 0 && visitFunction(arg, _scanner.getTokenOffset(), _scanner.getTokenLength(), _scanner.getTokenStartLine(), _scanner.getTokenStartCharacter(), () => _jsonPath.slice()) : () => true;
+  }
+  function toBeginVisit(visitFunction) {
+    return visitFunction ? () => {
+      if (suppressedCallbacks > 0) {
+        suppressedCallbacks++;
+      } else {
+        let cbReturn = visitFunction(_scanner.getTokenOffset(), _scanner.getTokenLength(), _scanner.getTokenStartLine(), _scanner.getTokenStartCharacter(), () => _jsonPath.slice());
+        if (cbReturn === false) {
+          suppressedCallbacks = 1;
+        }
+      }
+    } : () => true;
+  }
+  function toEndVisit(visitFunction) {
+    return visitFunction ? () => {
+      if (suppressedCallbacks > 0) {
+        suppressedCallbacks--;
+      }
+      if (suppressedCallbacks === 0) {
+        visitFunction(_scanner.getTokenOffset(), _scanner.getTokenLength(), _scanner.getTokenStartLine(), _scanner.getTokenStartCharacter());
+      }
+    } : () => true;
+  }
+  const onObjectBegin = toBeginVisit(visitor.onObjectBegin), onObjectProperty = toOneArgVisitWithPath(visitor.onObjectProperty), onObjectEnd = toEndVisit(visitor.onObjectEnd), onArrayBegin = toBeginVisit(visitor.onArrayBegin), onArrayEnd = toEndVisit(visitor.onArrayEnd), onLiteralValue = toOneArgVisitWithPath(visitor.onLiteralValue), onSeparator = toOneArgVisit(visitor.onSeparator), onComment = toNoArgVisit(visitor.onComment), onError = toOneArgVisit(visitor.onError);
+  const disallowComments = options && options.disallowComments;
+  const allowTrailingComma = options && options.allowTrailingComma;
+  function scanNext() {
+    while (true) {
+      const token = _scanner.scan();
+      switch (_scanner.getTokenError()) {
+        case 4:
+          handleError(14);
+          break;
+        case 5:
+          handleError(15);
+          break;
+        case 3:
+          handleError(13);
+          break;
+        case 1:
+          if (!disallowComments) {
+            handleError(11);
+          }
+          break;
+        case 2:
+          handleError(12);
+          break;
+        case 6:
+          handleError(16);
+          break;
+      }
+      switch (token) {
+        case 12:
+        case 13:
+          if (disallowComments) {
+            handleError(10);
+          } else {
+            onComment();
+          }
+          break;
+        case 16:
+          handleError(1);
+          break;
+        case 15:
+        case 14:
+          break;
+        default:
+          return token;
+      }
+    }
+  }
+  function handleError(error, skipUntilAfter = [], skipUntil = []) {
+    onError(error);
+    if (skipUntilAfter.length + skipUntil.length > 0) {
+      let token = _scanner.getToken();
+      while (token !== 17) {
+        if (skipUntilAfter.indexOf(token) !== -1) {
+          scanNext();
+          break;
+        } else if (skipUntil.indexOf(token) !== -1) {
+          break;
+        }
+        token = scanNext();
+      }
+    }
+  }
+  function parseString(isValue) {
+    const value = _scanner.getTokenValue();
+    if (isValue) {
+      onLiteralValue(value);
+    } else {
+      onObjectProperty(value);
+      _jsonPath.push(value);
+    }
+    scanNext();
+    return true;
+  }
+  function parseLiteral() {
+    switch (_scanner.getToken()) {
+      case 11:
+        const tokenValue = _scanner.getTokenValue();
+        let value = Number(tokenValue);
+        if (isNaN(value)) {
+          handleError(2);
+          value = 0;
+        }
+        onLiteralValue(value);
+        break;
+      case 7:
+        onLiteralValue(null);
+        break;
+      case 8:
+        onLiteralValue(true);
+        break;
+      case 9:
+        onLiteralValue(false);
+        break;
+      default:
+        return false;
+    }
+    scanNext();
+    return true;
+  }
+  function parseProperty() {
+    if (_scanner.getToken() !== 10) {
+      handleError(3, [], [2, 5]);
+      return false;
+    }
+    parseString(false);
+    if (_scanner.getToken() === 6) {
+      onSeparator(":");
+      scanNext();
+      if (!parseValue()) {
+        handleError(4, [], [2, 5]);
+      }
+    } else {
+      handleError(5, [], [2, 5]);
+    }
+    _jsonPath.pop();
+    return true;
+  }
+  function parseObject() {
+    onObjectBegin();
+    scanNext();
+    let needsComma = false;
+    while (_scanner.getToken() !== 2 && _scanner.getToken() !== 17) {
+      if (_scanner.getToken() === 5) {
+        if (!needsComma) {
+          handleError(4, [], []);
+        }
+        onSeparator(",");
+        scanNext();
+        if (_scanner.getToken() === 2 && allowTrailingComma) {
+          break;
+        }
+      } else if (needsComma) {
+        handleError(6, [], []);
+      }
+      if (!parseProperty()) {
+        handleError(4, [], [2, 5]);
+      }
+      needsComma = true;
+    }
+    onObjectEnd();
+    if (_scanner.getToken() !== 2) {
+      handleError(7, [2], []);
+    } else {
+      scanNext();
+    }
+    return true;
+  }
+  function parseArray() {
+    onArrayBegin();
+    scanNext();
+    let isFirstElement = true;
+    let needsComma = false;
+    while (_scanner.getToken() !== 4 && _scanner.getToken() !== 17) {
+      if (_scanner.getToken() === 5) {
+        if (!needsComma) {
+          handleError(4, [], []);
+        }
+        onSeparator(",");
+        scanNext();
+        if (_scanner.getToken() === 4 && allowTrailingComma) {
+          break;
+        }
+      } else if (needsComma) {
+        handleError(6, [], []);
+      }
+      if (isFirstElement) {
+        _jsonPath.push(0);
+        isFirstElement = false;
+      } else {
+        _jsonPath[_jsonPath.length - 1]++;
+      }
+      if (!parseValue()) {
+        handleError(4, [], [4, 5]);
+      }
+      needsComma = true;
+    }
+    onArrayEnd();
+    if (!isFirstElement) {
+      _jsonPath.pop();
+    }
+    if (_scanner.getToken() !== 4) {
+      handleError(8, [4], []);
+    } else {
+      scanNext();
+    }
+    return true;
+  }
+  function parseValue() {
+    switch (_scanner.getToken()) {
+      case 3:
+        return parseArray();
+      case 1:
+        return parseObject();
+      case 10:
+        return parseString(true);
+      default:
+        return parseLiteral();
+    }
+  }
+  scanNext();
+  if (_scanner.getToken() === 17) {
+    if (options.allowEmptyContent) {
+      return true;
+    }
+    handleError(4, [], []);
+    return false;
+  }
+  if (!parseValue()) {
+    handleError(4, [], []);
+    return false;
+  }
+  if (_scanner.getToken() !== 17) {
+    handleError(9, [], []);
+  }
+  return true;
+}
+
+// node_modules/jsonc-parser/lib/esm/main.js
+var ScanError;
+(function(ScanError) {
+  ScanError[ScanError["None"] = 0] = "None";
+  ScanError[ScanError["UnexpectedEndOfComment"] = 1] = "UnexpectedEndOfComment";
+  ScanError[ScanError["UnexpectedEndOfString"] = 2] = "UnexpectedEndOfString";
+  ScanError[ScanError["UnexpectedEndOfNumber"] = 3] = "UnexpectedEndOfNumber";
+  ScanError[ScanError["InvalidUnicode"] = 4] = "InvalidUnicode";
+  ScanError[ScanError["InvalidEscapeCharacter"] = 5] = "InvalidEscapeCharacter";
+  ScanError[ScanError["InvalidCharacter"] = 6] = "InvalidCharacter";
+})(ScanError || (ScanError = {}));
+var SyntaxKind;
+(function(SyntaxKind) {
+  SyntaxKind[SyntaxKind["OpenBraceToken"] = 1] = "OpenBraceToken";
+  SyntaxKind[SyntaxKind["CloseBraceToken"] = 2] = "CloseBraceToken";
+  SyntaxKind[SyntaxKind["OpenBracketToken"] = 3] = "OpenBracketToken";
+  SyntaxKind[SyntaxKind["CloseBracketToken"] = 4] = "CloseBracketToken";
+  SyntaxKind[SyntaxKind["CommaToken"] = 5] = "CommaToken";
+  SyntaxKind[SyntaxKind["ColonToken"] = 6] = "ColonToken";
+  SyntaxKind[SyntaxKind["NullKeyword"] = 7] = "NullKeyword";
+  SyntaxKind[SyntaxKind["TrueKeyword"] = 8] = "TrueKeyword";
+  SyntaxKind[SyntaxKind["FalseKeyword"] = 9] = "FalseKeyword";
+  SyntaxKind[SyntaxKind["StringLiteral"] = 10] = "StringLiteral";
+  SyntaxKind[SyntaxKind["NumericLiteral"] = 11] = "NumericLiteral";
+  SyntaxKind[SyntaxKind["LineCommentTrivia"] = 12] = "LineCommentTrivia";
+  SyntaxKind[SyntaxKind["BlockCommentTrivia"] = 13] = "BlockCommentTrivia";
+  SyntaxKind[SyntaxKind["LineBreakTrivia"] = 14] = "LineBreakTrivia";
+  SyntaxKind[SyntaxKind["Trivia"] = 15] = "Trivia";
+  SyntaxKind[SyntaxKind["Unknown"] = 16] = "Unknown";
+  SyntaxKind[SyntaxKind["EOF"] = 17] = "EOF";
+})(SyntaxKind || (SyntaxKind = {}));
+var parse2 = parse;
+var ParseErrorCode;
+(function(ParseErrorCode) {
+  ParseErrorCode[ParseErrorCode["InvalidSymbol"] = 1] = "InvalidSymbol";
+  ParseErrorCode[ParseErrorCode["InvalidNumberFormat"] = 2] = "InvalidNumberFormat";
+  ParseErrorCode[ParseErrorCode["PropertyNameExpected"] = 3] = "PropertyNameExpected";
+  ParseErrorCode[ParseErrorCode["ValueExpected"] = 4] = "ValueExpected";
+  ParseErrorCode[ParseErrorCode["ColonExpected"] = 5] = "ColonExpected";
+  ParseErrorCode[ParseErrorCode["CommaExpected"] = 6] = "CommaExpected";
+  ParseErrorCode[ParseErrorCode["CloseBraceExpected"] = 7] = "CloseBraceExpected";
+  ParseErrorCode[ParseErrorCode["CloseBracketExpected"] = 8] = "CloseBracketExpected";
+  ParseErrorCode[ParseErrorCode["EndOfFileExpected"] = 9] = "EndOfFileExpected";
+  ParseErrorCode[ParseErrorCode["InvalidCommentToken"] = 10] = "InvalidCommentToken";
+  ParseErrorCode[ParseErrorCode["UnexpectedEndOfComment"] = 11] = "UnexpectedEndOfComment";
+  ParseErrorCode[ParseErrorCode["UnexpectedEndOfString"] = 12] = "UnexpectedEndOfString";
+  ParseErrorCode[ParseErrorCode["UnexpectedEndOfNumber"] = 13] = "UnexpectedEndOfNumber";
+  ParseErrorCode[ParseErrorCode["InvalidUnicode"] = 14] = "InvalidUnicode";
+  ParseErrorCode[ParseErrorCode["InvalidEscapeCharacter"] = 15] = "InvalidEscapeCharacter";
+  ParseErrorCode[ParseErrorCode["InvalidCharacter"] = 16] = "InvalidCharacter";
+})(ParseErrorCode || (ParseErrorCode = {}));
 
 // lib/process.ts
 import { spawn } from "child_process";
@@ -211,6 +1018,9 @@ function isFailedExitCode(exitCode) {
 }
 function isFailedProcess(result) {
   return result.timedOut || isFailedExitCode(result.exitCode);
+}
+function buildOpencodeEnv(cwd) {
+  return { ...process.env, PWD: cwd };
 }
 function runProcess(command, opts) {
   return new Promise((resolve, reject) => {
@@ -221,6 +1031,10 @@ function runProcess(command, opts) {
     }
     const maxStderrChars = opts.maxStderrChars ?? 64 * 1024;
     const killGraceMs = opts.killGraceMs ?? 1000;
+    if (opts.signal?.aborted) {
+      resolve({ exitCode: null, stdout: "", stderr: "", timedOut: false, aborted: true });
+      return;
+    }
     const proc = spawn(file, args, {
       cwd: opts.cwd,
       env: opts.env,
@@ -229,6 +1043,7 @@ function runProcess(command, opts) {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let aborted = false;
     let settled = false;
     let stopRequested = false;
     let killTimeoutId;
@@ -243,6 +1058,13 @@ function runProcess(command, opts) {
         }
       }, killGraceMs);
     };
+    const onAbort = () => {
+      if (settled)
+        return;
+      aborted = true;
+      requestStop();
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     const timeoutId = setTimeout(() => {
       timedOut = true;
       proc.kill();
@@ -266,6 +1088,9 @@ function runProcess(command, opts) {
         stderr = stderr.slice(-maxStderrChars);
       }
     });
+    const detach = () => {
+      opts.signal?.removeEventListener("abort", onAbort);
+    };
     proc.on("error", (error) => {
       if (settled)
         return;
@@ -273,6 +1098,7 @@ function runProcess(command, opts) {
       clearTimeout(timeoutId);
       if (killTimeoutId)
         clearTimeout(killTimeoutId);
+      detach();
       reject(error);
     });
     proc.on("close", (exitCode) => {
@@ -282,13 +1108,23 @@ function runProcess(command, opts) {
       clearTimeout(timeoutId);
       if (killTimeoutId)
         clearTimeout(killTimeoutId);
-      resolve({ exitCode, stdout, stderr, timedOut });
+      detach();
+      resolve({ exitCode, stdout, stderr, timedOut, aborted });
     });
   });
 }
 
 // lib/run-eval.ts
 var SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+var ROOT_CONFIG_FILES = ["opencode.json", "opencode.jsonc"];
+function abortError(message = "skill evaluation aborted by the caller") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+function isAbortError(error) {
+  return error instanceof Error && (error.name === "AbortError" || error.code === "ABORT_ERR");
+}
 var ALL_ZERO_WARNING = "All should-trigger queries produced 0 triggers with no run errors. Check that trigger evals are using an agent that exposes skill tool events, such as the build agent.";
 function buildOpenCodeRunCommand(query, opts) {
   const cmd = [
@@ -341,6 +1177,7 @@ var cliInstalledSkillEnumerator = async (projectRoot) => {
   try {
     result = await runProcess(["opencode", "debug", "skill"], {
       cwd: projectRoot,
+      env: buildOpencodeEnv(projectRoot),
       timeoutMs: 1e4
     });
   } catch {
@@ -391,7 +1228,7 @@ function createV2SkillEnumerator(ctx) {
 }
 function findProjectRoot(cwd) {
   let current = cwd ?? process.cwd();
-  const { root } = parse(current);
+  const { root } = parse3(current);
   while (true) {
     if (existsSync2(join3(current, ".opencode")))
       return current;
@@ -405,45 +1242,277 @@ function findProjectRoot(cwd) {
   return cwd ?? process.cwd();
 }
 function linkOrCopyConfigEntry(source, target, isDirectory) {
+  if (existsSync2(target))
+    return;
+  mkdirSync(dirname(target), { recursive: true });
   try {
     symlinkSync(source, target, isDirectory ? "dir" : "file");
   } catch {
-    cpSync(source, target, { recursive: true });
+    if (!existsSync2(target))
+      cpSync(source, target, { recursive: true });
   }
 }
-function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName) {
+function isInsidePath(parent, child) {
+  const rel = relative(parent, child);
+  if (rel === "" || isAbsolute(rel))
+    return false;
+  return rel !== ".." && !rel.startsWith(`..${sep}`);
+}
+function canonicalizeForExclusion(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+function referencesSkillsRoot(skillsRoot, absolute) {
+  const canonicalRoot = canonicalizeForExclusion(skillsRoot);
+  const canonicalAbsolute = canonicalizeForExclusion(absolute);
+  if (canonicalAbsolute === canonicalRoot || isInsidePath(canonicalRoot, canonicalAbsolute)) {
+    return true;
+  }
+  return absolute === skillsRoot || isInsidePath(skillsRoot, absolute);
+}
+function isWithinExcludedSkill(excludedSkillPath, absolute) {
+  if (!excludedSkillPath)
+    return false;
+  const canonicalExcluded = canonicalizeForExclusion(excludedSkillPath);
+  const canonicalAbsolute = canonicalizeForExclusion(absolute);
+  return canonicalAbsolute === canonicalExcluded || isInsidePath(canonicalExcluded, canonicalAbsolute);
+}
+function isAncestorOfExcludedSkill(excludedSkillPath, absolute) {
+  if (!excludedSkillPath)
+    return false;
+  const canonicalExcluded = canonicalizeForExclusion(excludedSkillPath);
+  const canonicalAbsolute = canonicalizeForExclusion(absolute);
+  return isInsidePath(canonicalAbsolute, canonicalExcluded);
+}
+function collectRelativeConfigRefs(projectRoot, configFileName) {
+  const text = readFileSync3(join3(projectRoot, configFileName), "utf-8");
+  const data = parse2(text);
+  if (!data || typeof data !== "object")
+    return [];
+  const referenced = [];
+  const pushLocal = (value) => {
+    if (typeof value !== "string" || !value)
+      return;
+    if (/^\{file:.+\}$/.test(value))
+      return;
+    if (value.startsWith("/") || value.startsWith("~") || value.includes("://"))
+      return;
+    referenced.push(value);
+  };
+  if (Array.isArray(data.instructions))
+    data.instructions.forEach(pushLocal);
+  const fromFiles = (value) => {
+    if (typeof value === "string") {
+      const match = /^\{file:(.+)\}$/.exec(value);
+      if (match)
+        pushLocal(match[1]);
+      return;
+    }
+    if (Array.isArray(value))
+      value.forEach(fromFiles);
+    else if (value && typeof value === "object") {
+      Object.values(value).forEach(fromFiles);
+    }
+  };
+  fromFiles(data);
+  return referenced;
+}
+function expandConfigGlob(projectRoot, pattern) {
+  const segments = pattern.split("/").filter((part) => part !== "" && part !== ".");
+  if (segments.some((segment) => segment === "..")) {
+    console.error(`skill_eval: instruction pattern "${pattern}" references a parent directory (".."), which the isolated eval-root mirror cannot mirror; move the reference inside the project if eval runs must see it.`);
+    return [];
+  }
+  if (segments.some((segment) => segment.includes("{") || segment.includes("}"))) {
+    console.error(`skill_eval: instruction pattern "${pattern}" uses brace alternation, which the isolated eval-root mirror does not support; list one explicit file or glob per entry such as "dir/a.md", "dir/b.md", or "dir/*.md".`);
+    return [];
+  }
+  if (segments.some((segment) => segment.includes("**"))) {
+    console.error(`skill_eval: instruction pattern "${pattern}" uses "**" recursion, which the isolated eval-root mirror does not support; list explicit files or a single-directory glob such as "dir/*.md".`);
+    return [];
+  }
+  let bases = [""];
+  for (let index = 0;index < segments.length; index++) {
+    const segment = segments[index];
+    const next = [];
+    const hasGlob = /[*?[]/.test(segment);
+    for (const base of bases) {
+      const dirAbsolute = base ? join3(projectRoot, base) : projectRoot;
+      if (!existsSync2(dirAbsolute))
+        continue;
+      let entries;
+      try {
+        entries = readdirSync(dirAbsolute);
+      } catch {
+        continue;
+      }
+      let matcher;
+      if (hasGlob) {
+        try {
+          matcher = globSegmentToRegExp(segment);
+        } catch (error) {
+          console.error(`skill_eval: instruction pattern "${pattern}" contains an unsupported or malformed glob segment "${segment}" (${error instanceof Error ? error.message : String(error)}); the reference is not mirrored into the isolated eval root.`);
+          return [];
+        }
+      } else {
+        matcher = null;
+      }
+      for (const entry of entries) {
+        if (matcher ? !matcher.test(entry) : entry !== segment)
+          continue;
+        const childRelative = base ? `${base}/${entry}` : entry;
+        const childAbsolute = join3(projectRoot, childRelative);
+        if (index !== segments.length - 1) {
+          try {
+            if (!statSync(childAbsolute).isDirectory())
+              continue;
+          } catch {
+            continue;
+          }
+          next.push(childRelative);
+        } else {
+          next.push(childRelative);
+        }
+      }
+    }
+    bases = next;
+    if (bases.length === 0)
+      break;
+  }
+  return bases;
+}
+function globSegmentToRegExp(segment) {
+  let out = "^";
+  for (let i = 0;i < segment.length; i++) {
+    const ch = segment[i];
+    if (ch === "*") {
+      out += "[^/]*";
+    } else if (ch === "?") {
+      out += "[^/]";
+    } else if (ch === "[") {
+      const close = segment.indexOf("]", i + 1);
+      if (close === -1) {
+        throw new Error("unterminated character class (missing ']')");
+      }
+      let body = segment.slice(i + 1, close);
+      if (body.startsWith("!"))
+        body = `^${body.slice(1)}`;
+      try {
+        new RegExp(`[${body}]`);
+      } catch {
+        throw new Error(`unsupported character class "[${body}]"`);
+      }
+      out += `[${body}]`;
+      i = close;
+    } else {
+      out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${out}$`);
+}
+function expandConfigReference(projectRoot, reference) {
+  const hasGlob = /[*?[\]{}]/.test(reference);
+  let matches;
+  if (hasGlob) {
+    matches = expandConfigGlob(projectRoot, reference);
+  } else {
+    matches = [reference];
+  }
+  const resolved = [];
+  for (const match of matches) {
+    const absolute = resolve(projectRoot, match);
+    if (!isInsidePath(projectRoot, absolute)) {
+      console.error(`skill_eval: instruction reference "${reference}" resolves outside the project root and is not mirrored into the isolated eval root; move it inside the project if eval runs must see it.`);
+      continue;
+    }
+    if (existsSync2(absolute))
+      resolved.push(absolute);
+  }
+  return resolved;
+}
+function mirrorRootConfigDocuments(projectRoot, evalRoot, excludedSkillPath) {
+  const skillsRoot = join3(projectRoot, ".opencode", "skills");
+  for (const name of ROOT_CONFIG_FILES) {
+    const source = join3(projectRoot, name);
+    if (!existsSync2(source))
+      continue;
+    linkOrCopyConfigEntry(source, join3(evalRoot, name), false);
+    for (const reference of collectRelativeConfigRefs(projectRoot, name)) {
+      for (const absolute of expandConfigReference(projectRoot, reference)) {
+        if (referencesSkillsRoot(skillsRoot, absolute))
+          continue;
+        if (isWithinExcludedSkill(excludedSkillPath, absolute))
+          continue;
+        if (isAncestorOfExcludedSkill(excludedSkillPath, absolute)) {
+          console.error(`skill_eval: instruction reference "${reference}" resolves to a directory containing the tested skill; the isolated eval-root mirror refuses to copy that parent tree (it would reintroduce the skill under test). Reference the specific file instead.`);
+          continue;
+        }
+        const relativeTarget = relative(projectRoot, absolute);
+        const target = join3(evalRoot, relativeTarget);
+        if (!isInsidePath(evalRoot, target))
+          continue;
+        linkOrCopyConfigEntry(absolute, target, statSync(absolute).isDirectory());
+      }
+    }
+  }
+}
+function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName, excludedSkillPath) {
   const sourceOpenCode = join3(projectRoot, ".opencode");
-  if (!existsSync2(sourceOpenCode))
-    return;
-  const targetOpenCode = join3(evalRoot, ".opencode");
-  mkdirSync(targetOpenCode, { recursive: true });
-  for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
-    if (entry.name === "skills")
-      continue;
-    linkOrCopyConfigEntry(join3(sourceOpenCode, entry.name), join3(targetOpenCode, entry.name), entry.isDirectory());
+  if (existsSync2(sourceOpenCode)) {
+    const targetOpenCode = join3(evalRoot, ".opencode");
+    mkdirSync(targetOpenCode, { recursive: true });
+    const sourceSkillsRoot = join3(sourceOpenCode, "skills");
+    for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
+      if (entry.name === "skills")
+        continue;
+      const entryPath = join3(sourceOpenCode, entry.name);
+      if (referencesSkillsRoot(sourceSkillsRoot, entryPath))
+        continue;
+      if (isWithinExcludedSkill(excludedSkillPath, entryPath))
+        continue;
+      if (isAncestorOfExcludedSkill(excludedSkillPath, entryPath))
+        continue;
+      linkOrCopyConfigEntry(entryPath, join3(targetOpenCode, entry.name), entry.isDirectory());
+    }
+    const sourceSkills = join3(sourceOpenCode, "skills");
+    if (existsSync2(sourceSkills)) {
+      const targetSkills = join3(targetOpenCode, "skills");
+      mkdirSync(targetSkills, { recursive: true });
+      const canonicalSkillsRoot = canonicalizeForExclusion(sourceSkills);
+      const candidatePath = excludedSkillPath ?? join3(sourceSkills, skillName);
+      for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
+        if (entry.name === skillName)
+          continue;
+        const entryPath = join3(sourceSkills, entry.name);
+        const canonicalEntry = canonicalizeForExclusion(entryPath);
+        if (canonicalEntry === canonicalSkillsRoot)
+          continue;
+        if (isWithinExcludedSkill(candidatePath, entryPath))
+          continue;
+        if (isAncestorOfExcludedSkill(candidatePath, entryPath))
+          continue;
+        linkOrCopyConfigEntry(entryPath, join3(targetSkills, entry.name), entry.isDirectory());
+      }
+    }
   }
-  const sourceSkills = join3(sourceOpenCode, "skills");
-  if (!existsSync2(sourceSkills))
-    return;
-  const targetSkills = join3(targetOpenCode, "skills");
-  mkdirSync(targetSkills, { recursive: true });
-  for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
-    if (entry.name === skillName)
-      continue;
-    linkOrCopyConfigEntry(join3(sourceSkills, entry.name), join3(targetSkills, entry.name), entry.isDirectory());
-  }
+  mirrorRootConfigDocuments(projectRoot, evalRoot, excludedSkillPath);
 }
-async function runSingleQuery(query, skillName, skillDescription, timeout, projectRoot, agent, triggerOnly, model) {
+async function runSingleQuery(query, skillName, skillDescription, timeout, projectRoot, agent, triggerOnly, model, signal, excludedSkillPath) {
   if (!SKILL_NAME_RE.test(skillName)) {
     throw new Error(`Invalid skill name "${skillName}". Expected kebab-case (lowercase letters, numbers, and hyphens only).`);
   }
   const uniqueId = randomBytes(4).toString("hex");
   const cleanName = `${skillName}-skill-${uniqueId}`;
+  if (signal?.aborted)
+    throw abortError();
   const evalRoot = mkdtempSync(join3(osTmpdir(), "opencode-skill-eval-"));
   const skillsDir = join3(evalRoot, ".opencode", "skills", cleanName);
   const skillFile = join3(skillsDir, "SKILL.md");
   try {
-    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName);
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName, excludedSkillPath);
     mkdirSync(skillsDir, { recursive: true });
     const indentedDesc = skillDescription.split(`
 `).join(`
@@ -504,9 +1573,10 @@ async function runSingleQuery(query, skillName, skillDescription, timeout, proje
     };
     const result = await runProcess(cmd, {
       cwd: evalRoot,
-      env: { ...process.env, PWD: evalRoot },
+      env: buildOpencodeEnv(evalRoot),
       timeoutMs,
       maxStderrChars,
+      signal,
       onStdoutChunk(chunk) {
         buffer += chunk;
         flushBuffer();
@@ -514,6 +1584,9 @@ async function runSingleQuery(query, skillName, skillDescription, timeout, proje
       }
     });
     flushBuffer(true);
+    if (result.aborted || signal?.aborted) {
+      throw abortError();
+    }
     if (triggered && triggerOnly) {
       return true;
     }
@@ -540,8 +1613,12 @@ async function runEval(opts) {
     triggerThreshold = 0.5,
     triggerOnly = true,
     model,
-    agent = "build"
+    agent = "build",
+    signal,
+    excludedSkillPath
   } = opts;
+  if (signal?.aborted)
+    throw abortError();
   const jobs = [];
   for (const item of evalSet) {
     for (let r = 0;r < runsPerQuery; r++) {
@@ -550,13 +1627,18 @@ async function runEval(opts) {
   }
   const jobResults = [];
   let idx = 0;
+  let abortedDuringRun = false;
   async function worker() {
     while (idx < jobs.length) {
+      if (signal?.aborted) {
+        abortedDuringRun = true;
+        return;
+      }
       const job = jobs[idx++];
       if (!job)
         break;
       try {
-        const triggered = await runSingleQuery(job.item.query, skillName, description, timeout, projectRoot, agent, triggerOnly, model);
+        const triggered = await runSingleQuery(job.item.query, skillName, description, timeout, projectRoot, agent, triggerOnly, model, signal, excludedSkillPath);
         jobResults.push({
           query: job.item.query,
           triggered,
@@ -564,6 +1646,10 @@ async function runEval(opts) {
           errored: false
         });
       } catch (e) {
+        if (isAbortError(e) || signal?.aborted) {
+          abortedDuringRun = true;
+          return;
+        }
         console.error(`Warning: query failed: ${e}`);
         jobResults.push({
           query: job.item.query,
@@ -576,6 +1662,9 @@ async function runEval(opts) {
   }
   const workers = Array.from({ length: Math.min(numWorkers, jobs.length) }, () => worker());
   await Promise.all(workers);
+  if (signal?.aborted || abortedDuringRun) {
+    throw abortError();
+  }
   const queryTriggers = new Map;
   const queryErrors = new Map;
   const queryItems = new Map;
@@ -665,10 +1754,12 @@ function formatFailureDiagnostics(diagnostics) {
 }
 
 // lib/improve-description.ts
-async function callOpenCode(prompt, model, timeout = 300) {
+async function callOpenCode(prompt, model, timeout = 300, opts = {}) {
   const tmpPath = join4(tmpdir(), `skill-creator-${randomBytes2(6).toString("hex")}.md`);
   writeFileSync2(tmpPath, prompt);
   try {
+    if (opts.signal?.aborted)
+      throw abortError();
     const cmd = ["opencode", "run", "--format", "json"];
     if (model)
       cmd.push("--model", model);
@@ -710,10 +1801,13 @@ async function callOpenCode(prompt, model, timeout = 300) {
         lineBuffer = "";
       }
     };
+    const cwd = opts.projectRoot ?? process.cwd();
     const result = await runProcess(cmd, {
-      env: { ...process.env },
+      cwd,
+      env: buildOpencodeEnv(cwd),
       timeoutMs,
       maxStderrChars,
+      signal: opts.signal,
       onStdoutChunk(chunk) {
         stdout += chunk;
         lineBuffer += chunk;
@@ -721,6 +1815,9 @@ async function callOpenCode(prompt, model, timeout = 300) {
       }
     });
     flushLines(true);
+    if (result.aborted || opts.signal?.aborted) {
+      throw abortError();
+    }
     if (isFailedProcess(result)) {
       throw new Error(`opencode run exited ${result.exitCode}
 stderr: ${result.stderr}`);
@@ -745,7 +1842,9 @@ async function improveDescription(opts) {
     model,
     testResults,
     logDir,
-    iteration
+    iteration,
+    projectRoot,
+    signal
   } = opts;
   const failedTriggers = evalResults.results.filter((r) => r.should_trigger && !r.pass);
   const falseTriggers = evalResults.results.filter((r) => !r.should_trigger && !r.pass);
@@ -848,7 +1947,7 @@ I'd encourage you to be creative and mix up the style in different iterations si
 ${failureDiagnosticsSection}
 
 Please respond with only the new description text in <new_description> tags, nothing else.`;
-  let text = await callOpenCode(prompt, model);
+  let text = await callOpenCode(prompt, model, undefined, { projectRoot, signal });
   const match = text.match(/<new_description>([\s\S]*?)<\/new_description>/);
   let description = match ? match[1].trim().replace(/^["']|["']$/g, "") : text.trim().replace(/^["']|["']$/g, "");
   const transcript = {
@@ -869,7 +1968,7 @@ Please respond with only the new description text in <new_description> tags, not
 ` + `"${description}"
 
 ` + `Rewrite it to be under 1024 characters while keeping the most ` + `important trigger words and intent coverage. Respond with only ` + `the new description in <new_description> tags.`;
-    const shortenText = await callOpenCode(shortenPrompt, model);
+    const shortenText = await callOpenCode(shortenPrompt, model, undefined, { projectRoot, signal });
     const shortenMatch = shortenText.match(/<new_description>([\s\S]*?)<\/new_description>/);
     const shortened = shortenMatch ? shortenMatch[1].trim().replace(/^["']|["']$/g, "") : shortenText.trim().replace(/^["']|["']$/g, "");
     transcript.rewrite_prompt = shortenPrompt;
@@ -1205,10 +2304,15 @@ async function runLoop(opts) {
     agent,
     verbose,
     liveReportPath,
-    logDir
+    logDir,
+    projectRoot,
+    signal,
+    excludedSkillPath
   } = opts;
-  const projectRoot = findProjectRoot();
+  if (signal?.aborted)
+    throw abortError();
   const { name, description: originalDescription, fullContent: content } = parseSkillMd(skillPath);
+  const excludePath = excludedSkillPath ?? skillPath;
   let currentDescription = descriptionOverride ?? originalDescription;
   let trainSet;
   let testSet;
@@ -1224,6 +2328,8 @@ async function runLoop(opts) {
   const history = [];
   let exitReason = "unknown";
   for (let iteration = 1;iteration <= maxIterations; iteration++) {
+    if (signal?.aborted)
+      throw abortError();
     if (verbose) {
       console.error(`
 ${"=".repeat(60)}`);
@@ -1244,7 +2350,9 @@ ${"=".repeat(60)}`);
       triggerThreshold,
       triggerOnly,
       model,
-      agent
+      agent,
+      signal,
+      excludedSkillPath: excludePath
     });
     const evalElapsed = (Date.now() - t0) / 1000;
     const trainQueriesSet = new Set(trainSet.map((q) => q.query));
@@ -1344,6 +2452,8 @@ Max iterations reached (${maxIterations}).`);
       }
       break;
     }
+    if (signal?.aborted)
+      throw abortError();
     if (verbose) {
       console.error(`
 Improving description...`);
@@ -1365,7 +2475,9 @@ Improving description...`);
       history: blindedHistory,
       model,
       logDir,
-      iteration
+      iteration,
+      projectRoot,
+      signal
     });
     const improveElapsed = (Date.now() - t1) / 1000;
     if (verbose) {
@@ -1402,7 +2514,7 @@ Exit reason: ${exitReason}`);
 }
 
 // lib/aggregate.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3, readdirSync as readdirSync2, statSync } from "fs";
+import { existsSync as existsSync3, readFileSync as readFileSync4, readdirSync as readdirSync2, statSync as statSync2 } from "fs";
 import { join as join5, basename } from "path";
 function compareEvalIds(a, b) {
   const parseNumeric = (value) => {
@@ -1473,7 +2585,7 @@ function sortedDirs(dir, pattern) {
     return [];
   return readdirSync2(dir).filter((name) => {
     const full = join5(dir, name);
-    return statSync(full).isDirectory() && (!pattern || pattern.test(name));
+    return statSync2(full).isDirectory() && (!pattern || pattern.test(name));
   }).sort().map((name) => join5(dir, name));
 }
 function loadRunResults(benchmarkDir) {
@@ -1494,7 +2606,7 @@ function loadRunResults(benchmarkDir) {
     let evalId = evalIdx;
     if (existsSync3(metadataPath)) {
       try {
-        const meta = JSON.parse(readFileSync3(metadataPath, "utf-8"));
+        const meta = JSON.parse(readFileSync4(metadataPath, "utf-8"));
         evalId = meta.eval_id ?? evalIdx;
       } catch {}
     } else {
@@ -1524,7 +2636,7 @@ function loadRunResults(benchmarkDir) {
         }
         let grading;
         try {
-          grading = JSON.parse(readFileSync3(gradingFile, "utf-8"));
+          grading = JSON.parse(readFileSync4(gradingFile, "utf-8"));
         } catch (e) {
           console.error(`Warning: Invalid JSON in ${gradingFile}: ${e}`);
           continue;
@@ -1549,7 +2661,7 @@ function loadRunResults(benchmarkDir) {
         const timingFile = join5(runDir, "timing.json");
         if (result.time_seconds === 0 && existsSync3(timingFile)) {
           try {
-            const timingData = JSON.parse(readFileSync3(timingFile, "utf-8"));
+            const timingData = JSON.parse(readFileSync4(timingFile, "utf-8"));
             result.time_seconds = timingData.total_duration_seconds ?? 0;
             result.tokens = timingData.total_tokens ?? 0;
           } catch {}
@@ -1711,13 +2823,13 @@ import { spawn as spawn2 } from "child_process";
 import {
   existsSync as existsSync4,
   mkdirSync as mkdirSync3,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync5,
   readdirSync as readdirSync3,
-  statSync as statSync2,
+  statSync as statSync3,
   writeFileSync as writeFileSync5
 } from "fs";
 import { createServer } from "http";
-import { basename as basename2, extname, join as join6, relative } from "path";
+import { basename as basename2, extname, join as join6, relative as relative2 } from "path";
 var METADATA_FILES = new Set(["transcript.md", "user_notes.md", "metrics.json"]);
 var TEXT_EXTENSIONS = new Set([
   ".txt",
@@ -1784,7 +2896,7 @@ function embedFile(filePath) {
   const mime = getMimeType(filePath);
   if (TEXT_EXTENSIONS.has(ext)) {
     try {
-      const content = readFileSync4(filePath, "utf-8");
+      const content = readFileSync5(filePath, "utf-8");
       return { name, type: "text", content };
     } catch {
       return { name, type: "error", content: "(Error reading file)" };
@@ -1792,7 +2904,7 @@ function embedFile(filePath) {
   }
   if (IMAGE_EXTENSIONS.has(ext)) {
     try {
-      const raw = readFileSync4(filePath);
+      const raw = readFileSync5(filePath);
       const b64 = raw.toString("base64");
       return { name, type: "image", mime, data_uri: `data:${mime};base64,${b64}` };
     } catch {
@@ -1801,7 +2913,7 @@ function embedFile(filePath) {
   }
   if (ext === ".pdf") {
     try {
-      const raw = readFileSync4(filePath);
+      const raw = readFileSync5(filePath);
       const b64 = raw.toString("base64");
       return { name, type: "pdf", data_uri: `data:${mime};base64,${b64}` };
     } catch {
@@ -1810,7 +2922,7 @@ function embedFile(filePath) {
   }
   if (ext === ".xlsx") {
     try {
-      const raw = readFileSync4(filePath);
+      const raw = readFileSync5(filePath);
       const b64 = raw.toString("base64");
       return { name, type: "xlsx", data_b64: b64 };
     } catch {
@@ -1818,7 +2930,7 @@ function embedFile(filePath) {
     }
   }
   try {
-    const raw = readFileSync4(filePath);
+    const raw = readFileSync5(filePath);
     const b64 = raw.toString("base64");
     return { name, type: "binary", mime, data_uri: `data:${mime};base64,${b64}` };
   } catch {
@@ -1826,10 +2938,10 @@ function embedFile(filePath) {
   }
 }
 function findRunsRecursive(root, current, runs) {
-  if (!existsSync4(current) || !statSync2(current).isDirectory())
+  if (!existsSync4(current) || !statSync3(current).isDirectory())
     return;
   const outputsDir = join6(current, "outputs");
-  if (existsSync4(outputsDir) && statSync2(outputsDir).isDirectory()) {
+  if (existsSync4(outputsDir) && statSync3(outputsDir).isDirectory()) {
     const run = buildRun(root, current);
     if (run)
       runs.push(run);
@@ -1839,7 +2951,7 @@ function findRunsRecursive(root, current, runs) {
   const entries = readdirSync3(current).sort();
   for (const entry of entries) {
     const full = join6(current, entry);
-    if (statSync2(full).isDirectory() && !skip.has(entry)) {
+    if (statSync3(full).isDirectory() && !skip.has(entry)) {
       findRunsRecursive(root, full, runs);
     }
   }
@@ -1862,7 +2974,7 @@ function buildRun(root, runDir) {
   for (const candidate of [join6(runDir, "eval_metadata.json"), join6(runDir, "..", "eval_metadata.json")]) {
     if (existsSync4(candidate)) {
       try {
-        const metadata = JSON.parse(readFileSync4(candidate, "utf-8"));
+        const metadata = JSON.parse(readFileSync5(candidate, "utf-8"));
         prompt = metadata.prompt ?? "";
         evalId = metadata.eval_id ?? null;
       } catch {}
@@ -1874,7 +2986,7 @@ function buildRun(root, runDir) {
     for (const candidate of [join6(runDir, "transcript.md"), join6(runDir, "outputs", "transcript.md")]) {
       if (existsSync4(candidate)) {
         try {
-          const text = readFileSync4(candidate, "utf-8");
+          const text = readFileSync5(candidate, "utf-8");
           const match = text.match(/## Eval Prompt\n\n([\s\S]*?)(?=\n##|$)/);
           if (match)
             prompt = match[1].trim();
@@ -1886,14 +2998,14 @@ function buildRun(root, runDir) {
   }
   if (!prompt)
     prompt = "(No prompt found)";
-  const runId = relative(root, runDir).replace(/[/\\]/g, "-");
+  const runId = relative2(root, runDir).replace(/[/\\]/g, "-");
   const outputsDir = join6(runDir, "outputs");
   const outputFiles = [];
-  if (existsSync4(outputsDir) && statSync2(outputsDir).isDirectory()) {
+  if (existsSync4(outputsDir) && statSync3(outputsDir).isDirectory()) {
     const files = readdirSync3(outputsDir).sort();
     for (const f of files) {
       const full = join6(outputsDir, f);
-      if (statSync2(full).isFile() && !METADATA_FILES.has(f)) {
+      if (statSync3(full).isFile() && !METADATA_FILES.has(f)) {
         outputFiles.push(embedFile(full));
       }
     }
@@ -1902,7 +3014,7 @@ function buildRun(root, runDir) {
   for (const candidate of [join6(runDir, "grading.json"), join6(runDir, "..", "grading.json")]) {
     if (existsSync4(candidate)) {
       try {
-        grading = JSON.parse(readFileSync4(candidate, "utf-8"));
+        grading = JSON.parse(readFileSync5(candidate, "utf-8"));
       } catch {}
       if (grading)
         break;
@@ -1941,7 +3053,7 @@ function loadPreviousIteration(workspace) {
   const feedbackPath = join6(workspace, "feedback.json");
   if (existsSync4(feedbackPath)) {
     try {
-      const data = JSON.parse(readFileSync4(feedbackPath, "utf-8"));
+      const data = JSON.parse(readFileSync5(feedbackPath, "utf-8"));
       for (const r of data.reviews ?? []) {
         if (r.feedback?.trim()) {
           feedbackMap[r.run_id] = r.feedback;
@@ -1965,7 +3077,7 @@ function loadPreviousIteration(workspace) {
 }
 function generateReviewHtml(opts) {
   const { runs, skillName, previous, benchmark, templatePath } = opts;
-  const template = readFileSync4(templatePath, "utf-8");
+  const template = readFileSync5(templatePath, "utf-8");
   const previousFeedback = {};
   const previousOutputs = {};
   if (previous) {
@@ -2044,7 +3156,7 @@ async function handleReviewRequest(method, requestUrl, requestBody, context) {
     let benchmark = null;
     if (context.benchmarkPath && existsSync4(context.benchmarkPath)) {
       try {
-        benchmark = JSON.parse(readFileSync4(context.benchmarkPath, "utf-8"));
+        benchmark = JSON.parse(readFileSync5(context.benchmarkPath, "utf-8"));
       } catch {}
     }
     const html = generateReviewHtml({
@@ -2060,7 +3172,7 @@ async function handleReviewRequest(method, requestUrl, requestBody, context) {
     let data = "{}";
     if (existsSync4(context.feedbackPath)) {
       try {
-        data = readFileSync4(context.feedbackPath, "utf-8");
+        data = readFileSync5(context.feedbackPath, "utf-8");
       } catch {}
     }
     return textResponse(data, 200, "application/json");
@@ -2177,7 +3289,7 @@ async function serveReview(opts) {
     openBrowser = true,
     openBrowserImpl = defaultOpenBrowser
   } = opts;
-  if (!existsSync4(workspace) || !statSync2(workspace).isDirectory()) {
+  if (!existsSync4(workspace) || !statSync3(workspace).isDirectory()) {
     throw new Error(`Workspace is not a directory: ${workspace}`);
   }
   const skillName = skillNameOpt ?? basename2(workspace).replace(/-workspace$/, "");
@@ -2249,7 +3361,7 @@ function exportStaticReview(opts) {
   let benchmark = null;
   if (benchmarkPath && existsSync4(benchmarkPath)) {
     try {
-      benchmark = JSON.parse(readFileSync4(benchmarkPath, "utf-8"));
+      benchmark = JSON.parse(readFileSync5(benchmarkPath, "utf-8"));
     } catch {}
   }
   const html = generateReviewHtml({
@@ -2266,19 +3378,19 @@ function exportStaticReview(opts) {
 }
 
 // lib/workflow-guard.ts
-import { existsSync as existsSync5, readdirSync as readdirSync4, statSync as statSync3 } from "fs";
+import { existsSync as existsSync5, readdirSync as readdirSync4, statSync as statSync4 } from "fs";
 import { basename as basename3, join as join7 } from "path";
 function sortedDirs2(dir, pattern) {
-  if (!existsSync5(dir) || !statSync3(dir).isDirectory())
+  if (!existsSync5(dir) || !statSync4(dir).isDirectory())
     return [];
-  return readdirSync4(dir).map((name) => join7(dir, name)).filter((full) => statSync3(full).isDirectory()).filter((full) => pattern ? pattern.test(basename3(full)) : true).sort();
+  return readdirSync4(dir).map((name) => join7(dir, name)).filter((full) => statSync4(full).isDirectory()).filter((full) => pattern ? pattern.test(basename3(full)) : true).sort();
 }
 function hasAtLeastOneRun(configDir) {
   const runDirs = sortedDirs2(configDir, /^run-/);
   if (runDirs.length > 0)
     return true;
   const outputsDir = join7(configDir, "outputs");
-  return existsSync5(outputsDir) && statSync3(outputsDir).isDirectory();
+  return existsSync5(outputsDir) && statSync4(outputsDir).isDirectory();
 }
 function validateComparisonWorkspace(workspace) {
   const issues = [];
@@ -2297,7 +3409,7 @@ function validateComparisonWorkspace(workspace) {
       searchRoot: workspace
     };
   }
-  if (!statSync3(workspace).isDirectory()) {
+  if (!statSync4(workspace).isDirectory()) {
     return {
       valid: false,
       evalCount: 0,
@@ -2331,18 +3443,18 @@ function validateComparisonWorkspace(workspace) {
     const withSkillDir = join7(evalDir, "with_skill");
     const withoutSkillDir = join7(evalDir, "without_skill");
     const oldSkillDir = join7(evalDir, "old_skill");
-    if (existsSync5(withSkillDir) && statSync3(withSkillDir).isDirectory()) {
+    if (existsSync5(withSkillDir) && statSync4(withSkillDir).isDirectory()) {
       foundConfigs.add("with_skill");
     }
-    if (existsSync5(withoutSkillDir) && statSync3(withoutSkillDir).isDirectory()) {
+    if (existsSync5(withoutSkillDir) && statSync4(withoutSkillDir).isDirectory()) {
       foundConfigs.add("without_skill");
     }
-    if (existsSync5(oldSkillDir) && statSync3(oldSkillDir).isDirectory()) {
+    if (existsSync5(oldSkillDir) && statSync4(oldSkillDir).isDirectory()) {
       foundConfigs.add("old_skill");
     }
-    const hasWithSkill = existsSync5(withSkillDir) && statSync3(withSkillDir).isDirectory() && hasAtLeastOneRun(withSkillDir);
-    const hasWithoutSkill = existsSync5(withoutSkillDir) && statSync3(withoutSkillDir).isDirectory() && hasAtLeastOneRun(withoutSkillDir);
-    const hasOldSkill = existsSync5(oldSkillDir) && statSync3(oldSkillDir).isDirectory() && hasAtLeastOneRun(oldSkillDir);
+    const hasWithSkill = existsSync5(withSkillDir) && statSync4(withSkillDir).isDirectory() && hasAtLeastOneRun(withSkillDir);
+    const hasWithoutSkill = existsSync5(withoutSkillDir) && statSync4(withoutSkillDir).isDirectory() && hasAtLeastOneRun(withoutSkillDir);
+    const hasOldSkill = existsSync5(oldSkillDir) && statSync4(oldSkillDir).isDirectory() && hasAtLeastOneRun(oldSkillDir);
     if (!hasWithSkill) {
       issues.push({
         evalDir: basename3(evalDir),
@@ -2369,7 +3481,7 @@ function validateComparisonWorkspace(workspace) {
 import {
   existsSync as existsSync6,
   mkdirSync as mkdirSync4,
-  readFileSync as readFileSync5,
+  readFileSync as readFileSync6,
   renameSync,
   writeFileSync as writeFileSync6
 } from "fs";
@@ -2379,7 +3491,7 @@ function readStore(path) {
   if (!existsSync6(path))
     return [];
   try {
-    return JSON.parse(readFileSync5(path, "utf-8"));
+    return JSON.parse(readFileSync6(path, "utf-8"));
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error(`Failed to read gold standards store at ${path}: malformed JSON`);
@@ -2439,10 +3551,10 @@ import {
   existsSync as existsSync7,
   mkdirSync as mkdirSync5,
   readdirSync as readdirSync5,
-  readFileSync as readFileSync6,
+  readFileSync as readFileSync7,
   renameSync as renameSync2,
   rmSync as rmSync2,
-  statSync as statSync4,
+  statSync as statSync5,
   writeFileSync as writeFileSync7
 } from "fs";
 import { join as join9 } from "path";
@@ -2454,7 +3566,7 @@ function copyDirRecursive(src, dest) {
   for (const entry of readdirSync5(src)) {
     const srcPath = join9(src, entry);
     const destPath = join9(dest, entry);
-    if (statSync4(srcPath).isDirectory()) {
+    if (statSync5(srcPath).isDirectory()) {
       copyDirRecursive(srcPath, destPath);
     } else {
       copyFileSync(srcPath, destPath);
@@ -2499,7 +3611,7 @@ function ensureBundledSkillInstalled(options) {
   let installedVersion = "";
   if (existsSync7(versionFile)) {
     try {
-      installedVersion = readFileSync6(versionFile, "utf-8").trim();
+      installedVersion = readFileSync7(versionFile, "utf-8").trim();
     } catch {
       installedVersion = "";
     }
@@ -2555,7 +3667,7 @@ var AUTO_UPDATE_TIMEOUT_MS = 2500;
 var GOLD_STANDARDS_PATH = join10(homedir(), ".config", "opencode", "gold-standards.json");
 var PACKAGE_VERSION = (() => {
   try {
-    const pkg = JSON.parse(readFileSync7(PACKAGE_JSON_PATH, "utf-8"));
+    const pkg = JSON.parse(readFileSync8(PACKAGE_JSON_PATH, "utf-8"));
     return pkg.version ?? "0.0.0";
   } catch {
     return "0.0.0";
@@ -2625,7 +3737,7 @@ function compareVersions(a, b) {
 }
 function readAutoUpdateStatus(path) {
   try {
-    return JSON.parse(readFileSync7(path, "utf-8"));
+    return JSON.parse(readFileSync8(path, "utf-8"));
   } catch {
     return {};
   }
@@ -2637,10 +3749,10 @@ function writeAutoUpdateStatus(path, status) {
 `, "utf-8");
   } catch {}
 }
-function isInsidePath(parent, child, pathModule = {
-  isAbsolute,
-  relative: relative2,
-  sep
+function isInsidePath2(parent, child, pathModule = {
+  isAbsolute: isAbsolute2,
+  relative: relative3,
+  sep: sep2
 }) {
   const rel = pathModule.relative(parent, child);
   return rel === "" || !rel.startsWith("..") && !pathModule.isAbsolute(rel) && !rel.startsWith("/") && !rel.startsWith("\\") && !rel.includes(`..${pathModule.sep}`);
@@ -2691,7 +3803,7 @@ async function maybeAutoRefreshPluginCache(options = {}) {
         return { checked: true, cleared: false, reason: "missing-cache" };
       }
       const currentPluginDir = options.currentPluginDir ?? PLUGIN_DIR;
-      if (isInsidePath(paths.packageCacheRoot, currentPluginDir)) {
+      if (isInsidePath2(paths.packageCacheRoot, currentPluginDir)) {
         (options.scheduleClearImpl ?? scheduleCacheClear)(paths.packageCacheRoot);
         return { checked: true, cleared: false, reason: "scheduled-clear" };
       }
@@ -2730,6 +3842,15 @@ function deriveJsonSchema(args) {
   const jsonSchema = schema.toJSONSchema(schema.object(args ?? {}));
   const { $schema: _dialect, ...rest } = jsonSchema;
   return rest;
+}
+function resolveAbortSignal(context) {
+  if (!context || typeof context !== "object")
+    return;
+  const candidate = context.signal ?? context.abort;
+  if (!candidate || typeof candidate !== "object")
+    return;
+  const maybe = candidate;
+  return typeof maybe.aborted === "boolean" && typeof maybe.addEventListener === "function" ? maybe : undefined;
 }
 function buildPluginTools(instance) {
   return {
@@ -2816,7 +3937,7 @@ function buildPluginTools(instance) {
           model: tool.schema.string().optional().describe("Model ID in provider/model format"),
           agent: tool.schema.string().optional().describe("OpenCode agent for trigger eval runs (default: build)")
         },
-        async execute(args) {
+        async execute(args, context) {
           const { readFileSync } = await import("fs");
           const evalSet = JSON.parse(readFileSync(args.evalSetPath, "utf-8"));
           const validation = validateSkill(args.skillPath);
@@ -2837,7 +3958,9 @@ function buildPluginTools(instance) {
             triggerThreshold: args.triggerThreshold ?? 0.5,
             triggerOnly: args.triggerOnly ?? true,
             model: args.model,
-            agent: args.agent ?? "build"
+            agent: args.agent ?? "build",
+            signal: resolveAbortSignal(context),
+            excludedSkillPath: args.skillPath
           });
           return JSON.stringify(result, null, 2);
         }
@@ -2852,7 +3975,7 @@ function buildPluginTools(instance) {
           logDir: tool.schema.string().optional().describe("Directory to save improvement transcripts"),
           iteration: tool.schema.number().optional().describe("Current iteration number")
         },
-        async execute(args) {
+        async execute(args, context) {
           const { readFileSync } = await import("fs");
           const meta = parseSkillMd(args.skillPath);
           const evalResults = JSON.parse(readFileSync(args.evalResultsPath, "utf-8"));
@@ -2865,7 +3988,9 @@ function buildPluginTools(instance) {
             history,
             model: args.model,
             logDir: args.logDir ?? null,
-            iteration: args.iteration ?? null
+            iteration: args.iteration ?? null,
+            projectRoot: instance.projectRoot(),
+            signal: resolveAbortSignal(context)
           });
           return JSON.stringify({ description: newDescription, charCount: newDescription.length });
         }
@@ -2888,7 +4013,7 @@ function buildPluginTools(instance) {
           liveReportPath: tool.schema.string().optional().describe("Path to write live HTML report"),
           logDir: tool.schema.string().optional().describe("Directory for improvement transcripts")
         },
-        async execute(args) {
+        async execute(args, context) {
           const { readFileSync } = await import("fs");
           const evalSet = JSON.parse(readFileSync(args.evalSetPath, "utf-8"));
           const meta = parseSkillMd(args.skillPath);
@@ -2909,7 +4034,9 @@ function buildPluginTools(instance) {
             agent: args.agent ?? "build",
             verbose: true,
             liveReportPath: args.liveReportPath ?? null,
-            logDir: args.logDir ?? null
+            logDir: args.logDir ?? null,
+            projectRoot,
+            signal: resolveAbortSignal(context)
           });
           return JSON.stringify(result, null, 2);
         }
@@ -3085,9 +4212,9 @@ var v2Plugin = {
           name,
           description: definition.description,
           input: deriveJsonSchema(definition.args),
-          async execute(raw) {
+          async execute(raw, context) {
             return {
-              content: await definition.execute(raw, {})
+              content: await definition.execute(raw, context)
             };
           }
         });

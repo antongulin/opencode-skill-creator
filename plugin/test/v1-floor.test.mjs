@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 
 // H-02: prove the documented V1 floor (object entrypoint, OpenCode >= 1.18.29)
@@ -82,3 +83,159 @@ test(
     }
   },
 )
+
+// ---------------------------------------------------------------------------
+// Runtime floor: the published artifact must not just import on the promised
+// `engines.node >= 18` floor — it must actually RUN there. A static
+// `fs.globSync` import (Node 22+) once crashed the plugin on Node 18/20 before
+// any tool ran, and a source-syntax scan of the bundle cannot prove runtime
+// behavior. When the caller pre-provisions a real floor Node binary via
+// SKC_NODE_FLOOR_BIN (test fixture, provisioned outside the tests), this test
+// packs the plugin, npm-installs the tarball into a private consumer
+// directory, and has the floor Node itself execute real tool behavior
+// (setup() + skill_parse + skill_validate with meaningful outputs). Skips
+// honestly when no floor binary is provided: an unprovisioned floor is never
+// claimed as tested.
+// ---------------------------------------------------------------------------
+
+test("built artifact runs real tool behavior on the promised Node floor (>= 18)", async (t) => {
+  const floorBin = process.env.SKC_NODE_FLOOR_BIN
+  if (!floorBin) {
+    t.skip(`no Node floor binary provisioned (set SKC_NODE_FLOOR_BIN); current node is ${process.version}`)
+    return
+  }
+  if (!existsSync(floorBin)) {
+    assert.fail(`SKC_NODE_FLOOR_BIN does not exist: ${floorBin}`)
+  }
+
+  const floorVersion = execFileSync(floorBin, ["-v"], { encoding: "utf-8" }).trim()
+  const floorMajor = Number(floorVersion.replace(/^v/, "").split(".")[0])
+  // The promised floor IS Node 18; a binary older or newer than it does not
+  // prove the documented engine floor. Prove the actual 18 floor.
+  assert.equal(
+    floorMajor,
+    18,
+    `SKC_NODE_FLOOR_BIN must be a Node 18 binary (the promised engines.node floor), got ${floorVersion}`,
+  )
+
+  // Pack the real artifact and install it into a private consumer directory
+  // so the floor Node resolves the plugin exactly like a real consumer (no
+  // source-workspace rescue, externalized deps intact).
+  const pluginRoot = fileURLToPath(new URL("..", import.meta.url))
+  const iso = mkdtempSync(join(tmpdir(), "skc-node-floor-"))
+  const consumerDir = join(iso, "consumer")
+  const project = join(iso, "project")
+  const fixtureSkill = join(iso, "fixture-skill")
+  const markerPath = join(iso, "marker.json")
+  try {
+    mkdirSync(consumerDir, { recursive: true })
+    mkdirSync(project, { recursive: true })
+    mkdirSync(fixtureSkill, { recursive: true })
+    writeFileSync(
+      join(fixtureSkill, "SKILL.md"),
+      ["---", "name: floor-fixture", "description: A fixture skill parsed by the floor Node.", "---", "", "# Floor fixture", ""].join("\n"),
+    )
+    // Pack into this test's own temp directory so concurrent test files
+    // (which also pack for their runtime proofs) never race on one tarball
+    // path inside the plugin directory.
+    const packDest = join(iso, "pack")
+    mkdirSync(packDest, { recursive: true })
+    const tarball = execFileSync(
+      "npm",
+      ["pack", "--silent", "--ignore-scripts", `--pack-destination=${packDest}`],
+      {
+        cwd: pluginRoot,
+        encoding: "utf-8",
+      },
+    )
+      .trim()
+      .split("\n")
+      .pop()
+    try {
+      execFileSync("npm", ["init", "-y"], { cwd: consumerDir, stdio: "pipe" })
+      execFileSync(
+        "npm",
+        ["install", "--ignore-scripts", join(packDest, tarball.trim()), "@opencode-ai/plugin@1.18.29"],
+        { cwd: consumerDir, stdio: "pipe" },
+      )
+    } finally {
+      rmSync(join(packDest, tarball.trim()), { force: true })
+    }
+
+    writeFileSync(
+      join(consumerDir, "floor-behavior.mjs"),
+      `
+import { mkdirSync, writeFileSync } from "node:fs"
+import def from "opencode-skill-creator"
+
+const markerPath = ${JSON.stringify(markerPath)}
+const fixtureSkill = ${JSON.stringify(fixtureSkill)}
+const marker = { steps: [], parse: null, validate: null, error: null }
+try {
+  const added = []
+  const ctx = {
+    location: { directory: ${JSON.stringify(project)} },
+    skill: { list: async () => ({ data: [] }) },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition) })
+      },
+    },
+  }
+  // Private HOME/XDG are inherited from the spawning test process, so the
+  // bundled-skill install lands inside the isolated environment.
+  process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE = "0"
+
+  // 1. real setup(): tool registration path (the code path that historically
+  //    crashed at import/exec time on Node 18/20).
+  const cleanup = await def.setup(ctx)
+  marker.registered = added.map((tool) => tool.name).sort()
+
+  // 2. real executor behavior: parse and validate produce meaningful output.
+  const context = { signal: new AbortController().signal, progress: async () => {} }
+  const byName = new Map(added.map((tool) => [tool.name, tool]))
+  marker.parse = JSON.parse((await byName.get("skill_parse").execute({ skillPath: fixtureSkill }, context)).content)
+  marker.validate = JSON.parse((await byName.get("skill_validate").execute({ skillPath: fixtureSkill }, context)).content)
+
+  marker.steps.push("setup", "parse", "validate")
+  if (cleanup) await cleanup()
+} catch (error) {
+  marker.error = String(error && error.stack ? error.stack : error)
+} finally {
+  writeFileSync(markerPath, JSON.stringify(marker))
+}
+`,
+    )
+
+    const result = execFileSync(
+      floorBin,
+      [join(consumerDir, "floor-behavior.mjs")],
+      {
+        cwd: consumerDir,
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: iso,
+          XDG_CONFIG_HOME: join(iso, "config"),
+          XDG_CACHE_HOME: join(iso, "cache"),
+          OPENCODE_SKILL_CREATOR_AUTO_UPDATE: "0",
+        },
+        encoding: "utf-8",
+        timeout: 120_000,
+      },
+    )
+    void result
+
+    const marker = JSON.parse(readFileSync(markerPath, "utf-8"))
+    assert.equal(marker.error, null, `floor Node behavior error: ${marker.error}`)
+    assert.equal(marker.parse.name, "floor-fixture")
+    assert.equal(marker.validate.valid, true)
+    assert.equal(
+      marker.registered.includes("skill_validate"),
+      true,
+      "setup() registered the tools on the floor Node",
+    )
+    assert.deepEqual(marker.steps, ["setup", "parse", "validate"])
+  } finally {
+    rmSync(iso, { recursive: true, force: true })
+  }
+})

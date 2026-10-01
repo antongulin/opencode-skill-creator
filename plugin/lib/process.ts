@@ -7,6 +7,13 @@ interface RunProcessOptions {
   killGraceMs?: number
   maxStderrChars?: number
   onStdoutChunk?: (chunk: string) => boolean | void
+  /**
+   * Caller-owned cancellation. When it aborts, the child is asked to stop
+   * (SIGTERM, then SIGKILL after `killGraceMs`) and the promise resolves with
+   * `aborted: true` rather than rejecting. A signal that is already aborted
+   * before this call prevents the spawn entirely.
+   */
+  signal?: AbortSignal
 }
 
 export interface RunProcessResult {
@@ -14,6 +21,8 @@ export interface RunProcessResult {
   stdout: string
   stderr: string
   timedOut: boolean
+  /** True when the call ended because `opts.signal` aborted. */
+  aborted: boolean
 }
 
 export function isFailedExitCode(exitCode: number | null): boolean {
@@ -22,6 +31,22 @@ export function isFailedExitCode(exitCode: number | null): boolean {
 
 export function isFailedProcess(result: RunProcessResult): boolean {
   return result.timedOut || isFailedExitCode(result.exitCode)
+}
+
+/**
+ * Build the child environment for an `opencode` invocation pinned to `cwd`.
+ *
+ * opencode resolves its project root from `$PWD` rather than the spawn cwd, so
+ * an inherited/stale caller PWD leaks the wrong project into the child. Every
+ * `opencode` call shares this constructor: `cwd` is always the directory the
+ * child must treat as its project root (eval roots pass their temp root).
+ *
+ * Adapted from the contributor proposal in
+ * https://github.com/antongulin/opencode-skill-creator/pull/42
+ * (Co-authored-by: sogeisetsu <47493432+sogeisetsu@users.noreply.github.com>).
+ */
+export function buildOpencodeEnv(cwd: string): NodeJS.ProcessEnv {
+  return { ...process.env, PWD: cwd }
 }
 
 /**
@@ -40,6 +65,13 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
 
     const maxStderrChars = opts.maxStderrChars ?? 64 * 1024
     const killGraceMs = opts.killGraceMs ?? 1_000
+
+    // A signal that is already aborted before we start must not spawn at all.
+    if (opts.signal?.aborted) {
+      resolve({ exitCode: null, stdout: "", stderr: "", timedOut: false, aborted: true })
+      return
+    }
+
     // stdin must be closed ("ignore"). The `opencode` binary blocks on an
     // open-but-unwritten stdin pipe and produces no output — see the regression
     // test in process.test.ts. `stdout`/`stderr` are not valid spawn keys.
@@ -51,6 +83,7 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
     let stdout = ""
     let stderr = ""
     let timedOut = false
+    let aborted = false
     let settled = false
     let stopRequested = false
     let killTimeoutId: ReturnType<typeof setTimeout> | undefined
@@ -65,6 +98,13 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
         }
       }, killGraceMs)
     }
+
+    const onAbort = () => {
+      if (settled) return
+      aborted = true
+      requestStop()
+    }
+    opts.signal?.addEventListener("abort", onAbort, { once: true })
 
     const timeoutId = setTimeout(() => {
       timedOut = true
@@ -91,11 +131,16 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
       }
     })
 
+    const detach = () => {
+      opts.signal?.removeEventListener("abort", onAbort)
+    }
+
     proc.on("error", (error) => {
       if (settled) return
       settled = true
       clearTimeout(timeoutId)
       if (killTimeoutId) clearTimeout(killTimeoutId)
+      detach()
       reject(error)
     })
 
@@ -104,7 +149,8 @@ export function runProcess(command: string[], opts: RunProcessOptions): Promise<
       settled = true
       clearTimeout(timeoutId)
       if (killTimeoutId) clearTimeout(killTimeoutId)
-      resolve({ exitCode, stdout, stderr, timedOut })
+      detach()
+      resolve({ exitCode, stdout, stderr, timedOut, aborted })
     })
   })
 }
