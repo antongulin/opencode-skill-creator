@@ -19,6 +19,9 @@ const result = (
 
 test("runLoop derives train warnings from train results and prints unique split warnings", async () => {
   const calls: { evalResults: EvalOutput }[] = []
+  const evalRoots: string[] = []
+  const evalSignals: (AbortSignal | undefined)[] = []
+  const improveTargets: { projectRoot?: string; signal?: AbortSignal }[] = []
 
   mock.module("../lib/utils", () => ({
     parseSkillMd: () => ({
@@ -29,7 +32,11 @@ test("runLoop derives train warnings from train results and prints unique split 
   }))
 
   mock.module("../lib/run-eval", () => ({
-    findProjectRoot: () => "/tmp/project",
+    abortError: (message = "aborted") => {
+      const error = new Error(message)
+      error.name = "AbortError"
+      return error
+    },
     buildEvalWarnings: (results: EvalResultItem[]) => {
       const shouldTriggerResults = results.filter((r) => r.should_trigger)
       if (shouldTriggerResults.length === 0) return []
@@ -37,28 +44,33 @@ test("runLoop derives train warnings from train results and prints unique split 
         ? ["all-zero warning"]
         : []
     },
-    runEval: () => ({
-      skill_name: "warning-skill",
-      description: "original description",
-      results: [
-        result("train trigger"),
-        result("train negative", { should_trigger: false }),
-        result("test trigger"),
-      ],
-      warnings: [],
-      summary: {
-        passed: 1,
-        failed: 2,
-        total: 3,
-        run_errors: 0,
-        queries_with_errors: 0,
-      },
-    }),
+    runEval: (opts: { projectRoot: string; signal?: AbortSignal }) => {
+      evalRoots.push(opts.projectRoot)
+      evalSignals.push(opts.signal)
+      return {
+        skill_name: "warning-skill",
+        description: "original description",
+        results: [
+          result("train trigger"),
+          result("train negative", { should_trigger: false }),
+          result("test trigger"),
+        ],
+        warnings: [],
+        summary: {
+          passed: 1,
+          failed: 2,
+          total: 3,
+          run_errors: 0,
+          queries_with_errors: 0,
+        },
+      }
+    },
   }))
 
   mock.module("../lib/improve-description", () => ({
-    improveDescription: (opts: { evalResults: EvalOutput }) => {
+    improveDescription: (opts: { evalResults: EvalOutput; projectRoot?: string; signal?: AbortSignal }) => {
       calls.push({ evalResults: opts.evalResults })
+      improveTargets.push({ projectRoot: opts.projectRoot, signal: opts.signal })
       return "improved description"
     },
   }))
@@ -80,6 +92,7 @@ test("runLoop derives train warnings from train results and prints unique split 
 
   try {
     const { runLoop } = await import("../lib/run-loop")
+    const controller = new AbortController()
     await runLoop({
       evalSet,
       skillPath: "/tmp/skill/SKILL.md",
@@ -93,10 +106,21 @@ test("runLoop derives train warnings from train results and prints unique split 
       model: undefined,
       agent: undefined,
       verbose: true,
+      // LD1-3: the loop must evaluate the caller-supplied instance root, never a
+      // process-cwd-derived root (the old `findProjectRoot()` at the top of the
+      // loop is the regression this guards).
+      projectRoot: "/tmp/instance-root",
+      signal: controller.signal,
     })
 
+    expect(evalRoots).toEqual(["/tmp/instance-root", "/tmp/instance-root"])
     expect(calls[0]?.evalResults.warnings).toEqual(["all-zero warning"])
     expect(errors.filter((line) => line === "Warning: all-zero warning")).toHaveLength(2)
+    // The caller's signal reaches BOTH the eval phase and the improvement child.
+    expect(evalSignals.every((signal) => signal === controller.signal)).toBe(true)
+    // The loop's improvement child is pinned to the same project root.
+    expect(improveTargets[0]?.projectRoot).toBe("/tmp/instance-root")
+    expect(improveTargets[0]?.signal).toBe(controller.signal)
   } finally {
     console.error = originalError
     mock.restore()
