@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 
 // H-02: prove the documented V1 floor (object entrypoint, OpenCode >= 1.18.29)
@@ -84,33 +85,177 @@ test(
 )
 
 // ---------------------------------------------------------------------------
-// Runtime floor: the published artifact must be importable on the engine floor
-// the package promises (`engines.node >= 18`), not just on the dev machine's
-// Node. The correction that first mirrored root config used `fs.globSync`, which
-// only exists on Node 22+, so importing the built plugin on Node 18/20 crashed
-// before any tool ran. This loads the built artifact with an explicit
-// `--no-experimental-*`-style plain import and fails if any imported binding is
-// missing on the running engine.
+// Runtime floor: the published artifact must not just import on the promised
+// `engines.node >= 18` floor — it must actually RUN there. A static
+// `fs.globSync` import (Node 22+) once crashed the plugin on Node 18/20 before
+// any tool ran, and a source-syntax scan of the bundle cannot prove runtime
+// behavior. So this test provisions a real Node 18 binary as an optional test
+// fixture (`SKC_NODE_FLOOR_BIN`, or — only when the caller opts in via
+// SKC_NODE_FLOOR_FIXTURE pointing at a prepared `node-bin-darwin-arm64`-style
+// tarball — extracted into the approved temp fixture area), packs the plugin,
+// installs the tarball into a private consumer directory, and has the floor
+// Node itself execute real tool behavior (setup() + skill_parse +
+// skill_validate with meaningful outputs). Skips honestly when no floor
+// binary is available: an unprovisioned floor is never claimed as tested.
 // ---------------------------------------------------------------------------
 
-const distEntry = new URL("../dist/skill-creator.js", import.meta.url)
+function floorNodeBin() {
+  const explicit = process.env.SKC_NODE_FLOOR_BIN
+  if (explicit) {
+    return existsSync(explicit) ? { bin: explicit, source: "SKC_NODE_FLOOR_BIN" } : null
+  }
+  const fixtureTgz = process.env.SKC_NODE_FLOOR_FIXTURE
+  if (!fixtureTgz || !existsSync(fixtureTgz)) return null
+  // Extract into the approved shared temp area, reusing an existing extracted
+  // fixture when present. Test-only provisioning: never installed globally,
+  // never added to any manifest, and cleaned up with the temp area.
+  const fixtureDir = join(tmpdir(), "skc-node18-fixture")
+  const bin = join(fixtureDir, "package", "bin", "node")
+  if (existsSync(bin)) return { bin, source: `fixture ${fixtureTgz}` }
+  try {
+    execFileSync("tar", ["xzf", fixtureTgz, "package/bin/node"], { cwd: fixtureDir })
+    return { bin, source: `fixture ${fixtureTgz}` }
+  } catch {
+    return null
+  }
+}
 
-test("built artifact imports on the promised Node floor (>= 18)", async () => {
-  const mod = await import(distEntry.href)
-  // If the module imported, every top-level binding it pulls from `fs` exists on
-  // this Node runtime. Assert the real entrypoints are present.
-  assert.equal(typeof mod.default, "object", "default export present")
-  assert.equal(typeof mod.default.setup, "function", "V2 setup() present")
-  assert.equal(typeof mod.default.server, "function", "V1 server() present")
+test("built artifact runs real tool behavior on the promised Node floor (>= 18)", async () => {
+  const floor = floorNodeBin()
+  const currentMajor = Number(process.versions.node.split(".")[0])
+  if (!floor) {
+    test.skip(
+      `no Node floor binary provisioned (set SKC_NODE_FLOOR_BIN or SKC_NODE_FLOOR_FIXTURE); current node is ${process.version}`,
+    )
+    return
+  }
 
-  // Guard the specific regression: the built artifact must not statically import
-  // Node's `globSync` (Node 22+ only) from `fs`. A static import crashes Node
-  // 18/20 before any tool runs, so scan the whole artifact for the binding.
-  const { readFileSync } = await import("node:fs")
-  const builtSource = readFileSync(distEntry, "utf-8")
-  assert.equal(
-    /\bglobSync\b/.test(builtSource),
-    false,
-    "built artifact must not statically import fs.globSync (Node 22+ only)",
+  const floorVersion = execFileSync(floor.bin, ["-v"], { encoding: "utf-8" }).trim()
+  const floorMajor = Number(floorVersion.slice(1).split(".")[0])
+  assert.ok(
+    floorMajor < currentMajor,
+    `floor binary ${floorVersion} must be older than the dev Node ${process.version} to prove the floor`,
   )
+  assert.ok(floorMajor >= 18, `floor binary must be the promised Node >= 18 floor, got ${floorVersion}`)
+
+  // Pack the real artifact and install it into a private consumer directory
+  // so the floor Node resolves the plugin exactly like a real consumer (no
+  // source-workspace rescue, externalized deps intact).
+  const pluginRoot = fileURLToPath(new URL("..", import.meta.url))
+  const iso = mkdtempSync(join(tmpdir(), "skc-node-floor-"))
+  const consumerDir = join(iso, "consumer")
+  const project = join(iso, "project")
+  const fixtureSkill = join(iso, "fixture-skill")
+  const markerPath = join(iso, "marker.json")
+  try {
+    mkdirSync(consumerDir, { recursive: true })
+    mkdirSync(project, { recursive: true })
+    mkdirSync(fixtureSkill, { recursive: true })
+    writeFileSync(
+      join(fixtureSkill, "SKILL.md"),
+      ["---", "name: floor-fixture", "description: A fixture skill parsed by the floor Node.", "---", "", "# Floor fixture", ""].join("\n"),
+    )
+    // Pack into this test's own temp directory so concurrent test files
+    // (which also pack for their runtime proofs) never race on one tarball
+    // path inside the plugin directory.
+    const packDest = join(iso, "pack")
+    mkdirSync(packDest, { recursive: true })
+    const tarball = execFileSync(
+      "npm",
+      ["pack", "--silent", "--ignore-scripts", `--pack-destination=${packDest}`],
+      {
+        cwd: pluginRoot,
+        encoding: "utf-8",
+      },
+    )
+      .trim()
+      .split("\n")
+      .pop()
+    try {
+      execFileSync("npm", ["init", "-y"], { cwd: consumerDir, stdio: "pipe" })
+      execFileSync(
+        "npm",
+        ["install", "--ignore-scripts", join(packDest, tarball.trim()), "@opencode-ai/plugin@1.18.29"],
+        { cwd: consumerDir, stdio: "pipe" },
+      )
+    } finally {
+      rmSync(join(packDest, tarball.trim()), { force: true })
+    }
+
+    writeFileSync(
+      join(consumerDir, "floor-behavior.mjs"),
+      `
+import { mkdirSync, writeFileSync } from "node:fs"
+import def from "opencode-skill-creator"
+
+const markerPath = ${JSON.stringify(markerPath)}
+const fixtureSkill = ${JSON.stringify(fixtureSkill)}
+const marker = { steps: [], parse: null, validate: null, error: null }
+try {
+  const added = []
+  const ctx = {
+    location: { directory: ${JSON.stringify(project)} },
+    skill: { list: async () => ({ data: [] }) },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition) })
+      },
+    },
+  }
+  // Private HOME/XDG are inherited from the spawning test process, so the
+  // bundled-skill install lands inside the isolated environment.
+  process.env.OPENCODE_SKILL_CREATOR_AUTO_UPDATE = "0"
+
+  // 1. real setup(): tool registration path (the code path that historically
+  //    crashed at import/exec time on Node 18/20).
+  const cleanup = await def.setup(ctx)
+  marker.registered = added.map((tool) => tool.name).sort()
+
+  // 2. real executor behavior: parse and validate produce meaningful output.
+  const context = { signal: new AbortController().signal, progress: async () => {} }
+  const byName = new Map(added.map((tool) => [tool.name, tool]))
+  marker.parse = JSON.parse((await byName.get("skill_parse").execute({ skillPath: fixtureSkill }, context)).content)
+  marker.validate = JSON.parse((await byName.get("skill_validate").execute({ skillPath: fixtureSkill }, context)).content)
+
+  marker.steps.push("setup", "parse", "validate")
+  if (cleanup) await cleanup()
+} catch (error) {
+  marker.error = String(error && error.stack ? error.stack : error)
+} finally {
+  writeFileSync(markerPath, JSON.stringify(marker))
+}
+`,
+    )
+
+    const result = execFileSync(
+      floor.bin,
+      [join(consumerDir, "floor-behavior.mjs")],
+      {
+        cwd: consumerDir,
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: iso,
+          XDG_CONFIG_HOME: join(iso, "config"),
+          XDG_CACHE_HOME: join(iso, "cache"),
+          OPENCODE_SKILL_CREATOR_AUTO_UPDATE: "0",
+        },
+        encoding: "utf-8",
+        timeout: 120_000,
+      },
+    )
+    void result
+
+    const marker = JSON.parse(readFileSync(markerPath, "utf-8"))
+    assert.equal(marker.error, null, `floor Node behavior error: ${marker.error}`)
+    assert.equal(marker.parse.name, "floor-fixture")
+    assert.equal(marker.validate.valid, true)
+    assert.equal(
+      marker.registered.includes("skill_validate"),
+      true,
+      "setup() registered the tools on the floor Node",
+    )
+    assert.deepEqual(marker.steps, ["setup", "parse", "validate"])
+  } finally {
+    rmSync(iso, { recursive: true, force: true })
+  }
 })

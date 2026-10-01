@@ -7,13 +7,14 @@ import {
   mkdtempSync,
   mkdirSync,
   readlinkSync,
+  readdirSync,
   rmSync,
   writeFileSync,
   readFileSync,
   realpathSync,
 } from "fs"
 import { tmpdir } from "os"
-import { join } from "path"
+import { dirname, join } from "path"
 
 import {
   assertNoInstalledSkillConflict,
@@ -216,6 +217,165 @@ test("symlinkProjectOpenCodeConfig expands glob references and never reintroduce
     rmSync(projectRoot, { recursive: true, force: true })
     rmSync(evalRoot, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Glob-mirror boundaries (CG1): real files, observable stderr, no silent loss.
+// The mirror reports unsupported patterns on stderr and never copies outside
+// the project root; supported patterns keep working.
+// ---------------------------------------------------------------------------
+
+/** Capture stderr during one mirror call, plus which files appeared. */
+function mirrorCapturingStderr(
+  layout: (projectRoot: string) => void,
+  pattern: string,
+  skillName = "tested-skill",
+) {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-glob-boundary-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-glob-boundary-eval-"))
+  const warnings: string[] = []
+  const originalError = console.error
+  let result: { warnings: string[]; mirrored: string[]; readMirror: (name: string) => string }
+  try {
+    layout(projectRoot)
+    writeFileSync(
+      join(projectRoot, "opencode.jsonc"),
+      JSON.stringify({ instructions: [pattern] }),
+    )
+    console.error = (...args: unknown[]) => warnings.push(args.join(" "))
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName)
+    console.error = originalError
+    const mirrored: string[] = []
+    // Content is read from the source project (the mirror is a symlink to it
+    // on symlink-capable platforms), captured as data before cleanup.
+    const contents: Map<string, string> = new Map()
+    const collect = (base: string) => {
+      for (const entry of readdirSync(base, { withFileTypes: true })) {
+        if (entry.name === "opencode.jsonc") continue
+        const child = join(base, entry.name)
+        if (entry.isDirectory()) collect(child)
+        else {
+          mirrored.push(child)
+          const source = lstatSync(child).isSymbolicLink() ? readlinkSync(child) : child
+          contents.set(entry.name, readFileSync(source, "utf-8"))
+        }
+      }
+    }
+    collect(evalRoot)
+    const readMirror = (name: string): string => {
+      const value = contents.get(name)
+      expect(value !== undefined).toBe(true)
+      return value!
+    }
+    result = { warnings, mirrored: mirrored.sort(), readMirror }
+    return result
+  } finally {
+    console.error = originalError
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+}
+
+test("parent-directory glob is reported and never copied out of the project", () => {
+  let siblingFile = ""
+  const { warnings, mirrored, projectRoot } = mirrorCapturingStderr((root) => {
+    // The referenced material lives OUTSIDE the project: ../shared/a.md.
+    const shared = join(dirname(root), "shared")
+    mkdirSync(shared, { recursive: true })
+    siblingFile = join(shared, "a.md")
+    writeFileSync(siblingFile, "shared rules\n")
+  }, "../shared/*.md")
+  expect(warnings.length).toBe(1)
+  expect(warnings[0]).toContain("../shared/*.md")
+  expect(warnings[0]).toContain("parent directory")
+  // Nothing outside the project root may appear inside the eval root.
+  expect(mirrored.some((path) => path.includes("shared"))).toBe(false)
+  // ...and nothing outside the project root was itself modified.
+  expect(existsSync(siblingFile)).toBe(true)
+  expect(readFileSync(siblingFile, "utf-8")).toBe("shared rules\n")
+  // Only the mirrored config document lands in the eval root.
+  expect(mirrored).toEqual([])
+})
+
+test("brace alternation is mirrored with content intact", () => {
+  const { warnings, mirrored, readMirror } = mirrorCapturingStderr((root) => {
+    mkdirSync(join(root, "rules"), { recursive: true })
+    writeFileSync(join(root, "rules", "a.md"), "A rules\n")
+    writeFileSync(join(root, "rules", "b.md"), "B rules\n")
+  }, "rules/{a,b}.md")
+  expect(warnings).toEqual([])
+  expect(mirrored.sort()).toEqual([
+    expect.stringContaining("rules/a.md"),
+    expect.stringContaining("rules/b.md"),
+  ])
+  expect(readMirror("a.md")).toBe("A rules\n")
+  expect(readMirror("b.md")).toBe("B rules\n")
+})
+
+test("single-directory glob remains supported", () => {
+  const { warnings, mirrored, readMirror } = mirrorCapturingStderr((root) => {
+    mkdirSync(join(root, "rules"), { recursive: true })
+    writeFileSync(join(root, "rules", "a.md"), "A rules\n")
+    writeFileSync(join(root, "rules", "b.md"), "B rules\n")
+  }, "rules/*.md")
+  expect(warnings).toEqual([])
+  expect(mirrored.length).toBe(2)
+  expect(readMirror("a.md")).toBe("A rules\n")
+})
+
+test("repeated directory segments match by position, not by name", () => {
+  const { warnings, mirrored, readMirror } = mirrorCapturingStderr((root) => {
+    // `a/a/*.md` needs the LAST segment to expand the directory a second
+    // time, even though its value equals the first segment's value.
+    mkdirSync(join(root, "a", "a"), { recursive: true })
+    writeFileSync(join(root, "a", "a", "deep.md"), "deep rules\n")
+  }, "a/a/*.md")
+  expect(warnings).toEqual([])
+  expect(mirrored.length).toBe(1)
+  expect(mirrored[0]).toContain(join("a", "a", "deep.md"))
+  expect(readMirror("deep.md")).toBe("deep rules\n")
+})
+
+test("dot-prefixed basename inside the project is a valid mirror target", () => {
+  const { warnings, mirrored, readMirror } = mirrorCapturingStderr((root) => {
+    // `..notes.md` starts with ".." but stays inside the project root.
+    writeFileSync(join(root, "..notes.md"), "dot-prefixed rules\n")
+  }, "..notes.md")
+  expect(warnings).toEqual([])
+  expect(mirrored.length).toBe(1)
+  expect(mirrored[0]).toContain("..notes.md")
+  expect(readMirror("..notes.md")).toBe("dot-prefixed rules\n")
+})
+
+test("dot-prefixed basename nested under a directory mirrors too", () => {
+  const { warnings, mirrored, readMirror } = mirrorCapturingStderr((root) => {
+    mkdirSync(join(root, "rules"), { recursive: true })
+    writeFileSync(join(root, "rules", "..notes.md"), "nested dot-prefixed rules\n")
+  }, "rules/..notes.md")
+  expect(warnings).toEqual([])
+  expect(mirrored.length).toBe(1)
+  expect(mirrored[0]).toContain(join("rules", "..notes.md"))
+  expect(readMirror("..notes.md")).toBe("nested dot-prefixed rules\n")
+})
+
+test("malformed character class is reported, not thrown", () => {
+  const { warnings, mirrored } = mirrorCapturingStderr((root) => {
+    writeFileSync(join(root, "za.md"), "z rules\n")
+  }, "[z-a].md")
+  expect(warnings.length).toBe(1)
+  expect(warnings[0]).toContain("[z-a]")
+  expect(warnings[0]).toContain("malformed glob segment")
+  expect(mirrored).toEqual([])
+})
+
+test("** recursion keeps reporting its unsupported boundary", () => {
+  const { warnings, mirrored } = mirrorCapturingStderr((root) => {
+    mkdirSync(join(root, "a", "b"), { recursive: true })
+    writeFileSync(join(root, "a", "b", "deep.md"), "deep rules\n")
+  }, "a/**/*.md")
+  expect(warnings.length).toBe(1)
+  expect(warnings[0]).toContain("**")
+  expect(mirrored).toEqual([])
 })
 
 // ---------------------------------------------------------------------------

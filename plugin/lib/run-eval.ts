@@ -22,7 +22,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "fs"
-import { dirname, isAbsolute, join, parse, relative, resolve } from "path"
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "path"
 import { randomBytes } from "crypto"
 import { tmpdir as osTmpdir } from "os"
 import { parse as parseJsonc } from "jsonc-parser"
@@ -306,7 +306,10 @@ function linkOrCopyConfigEntry(source: string, target: string, isDirectory: bool
 /** True when `child` is strictly inside `parent` (no partial-name matches). */
 function isInsidePath(parent: string, child: string): boolean {
   const rel = relative(parent, child)
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
+  if (rel === "" || isAbsolute(rel)) return false
+  // Reject only genuine escapes (`..` itself or segments under it). A plain
+  // `startsWith("..")` would also reject valid names such as `..notes.md`.
+  return rel !== ".." && !rel.startsWith(`..${sep}`)
 }
 
 /**
@@ -349,14 +352,22 @@ function collectRelativeConfigRefs(projectRoot: string, configFileName: string):
  * Expand a glob pattern into project-relative matches using only the Node fs
  * API guaranteed on the promised `node >=18` floor. `fs.globSync` is
  * deliberately NOT used: it only exists on Node 22+, so importing it would
- * break the plugin on Node 18/20 before any tool runs. The pattern grammar is
- * the documented config subset (`<dir>/<file>.md`, `*`, `?`, `[...]`); `**`
- * recursion is not supported and is reported rather than silently mishandled.
+ * break the plugin on Node 18/20 before any tool runs.
+ *
+ * Supported grammar: literal directories, `*`, `?`, `[...]`/`[!...]`, and
+ * brace alternation `{a,b}`; every segment stays at a single directory level.
+ * Anything outside that subset — `**` recursion or a `..` parent reference —
+ * is reported on stderr and expands to nothing, so a material config
+ * reference is never silently lost.
  */
 function expandConfigGlob(projectRoot: string, pattern: string): string[] {
   const segments = pattern.split("/").filter((part) => part !== "" && part !== ".")
   if (segments.some((segment) => segment === "..")) {
-    // Escaping the project root cannot be mirrored as a sibling.
+    // Escaping the project root cannot be mirrored as a sibling. Surface it
+    // instead of silently losing the referenced files.
+    console.error(
+      `skill_eval: instruction pattern "${pattern}" references a parent directory (".."), which the isolated eval-root mirror cannot mirror; move the reference inside the project if eval runs must see it.`,
+    )
     return []
   }
   if (segments.some((segment) => segment.includes("**"))) {
@@ -367,9 +378,10 @@ function expandConfigGlob(projectRoot: string, pattern: string): string[] {
   }
 
   let bases: string[] = [""]
-  for (const segment of segments) {
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index]
     const next: string[] = []
-    const hasGlob = /[*?[]/.test(segment)
+    const hasGlob = /[*?[{]/.test(segment)
     for (const base of bases) {
       const dirAbsolute = base ? join(projectRoot, base) : projectRoot
       if (!existsSync(dirAbsolute)) continue
@@ -379,15 +391,36 @@ function expandConfigGlob(projectRoot: string, pattern: string): string[] {
       } catch {
         continue
       }
-      const matcher = hasGlob ? globSegmentToRegExp(segment) : null
+      let matcher: RegExp | null
+      if (hasGlob) {
+        try {
+          matcher = globSegmentToRegExp(segment)
+        } catch (error) {
+          // A malformed glob (e.g. `[z-a]`, an unclosed `[`) must not throw
+          // out of the mirror or silently expand to nothing.
+          console.error(
+            `skill_eval: instruction pattern "${pattern}" contains an unsupported or malformed glob segment "${segment}" (${error instanceof Error ? error.message : String(error)}); the reference is not mirrored into the isolated eval root.`,
+          )
+          return []
+        }
+      } else {
+        matcher = null
+      }
       for (const entry of entries) {
         if (matcher ? !matcher.test(entry) : entry !== segment) continue
         const childRelative = base ? `${base}/${entry}` : entry
         const childAbsolute = join(projectRoot, childRelative)
         // A directory matches only if it is not the last segment (a final
-        // segment must name a file to mirror).
-        if (statSync(childAbsolute).isDirectory()) {
-          if (segment !== segments[segments.length - 1]) next.push(childRelative)
+        // segment must name a file to mirror). Compare the POSITION, not the
+        // segment value: a repeated directory name such as `a/a/*.md` has its
+        // final segment equal to an earlier one.
+        if (index !== segments.length - 1) {
+          try {
+            if (!statSync(childAbsolute).isDirectory()) continue
+          } catch {
+            continue
+          }
+          next.push(childRelative)
         } else {
           next.push(childRelative)
         }
@@ -399,30 +432,73 @@ function expandConfigGlob(projectRoot: string, pattern: string): string[] {
   return bases
 }
 
-/** Compile one glob path segment (`a*b?c[de]`) to an anchored RegExp. */
+/** Compile one glob path segment (`a*b?c[de]`, `{a,b}`) to an anchored RegExp. */
 function globSegmentToRegExp(segment: string): RegExp {
-  let out = "^"
+  // Pieces alternate between accumulated literal/glob output and brace
+  // groups, so combinations splice the alternatives in at the brace position
+  // (`{a,b}.md` -> ^a\.md$ | ^b\.md$, not ^\.mda$).
+  const out: string[] = []
+  let literal = "^"
+  const groups: string[][] = []
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i]
     if (ch === "*") {
-      out += "[^/]*"
+      literal += "[^/]*"
     } else if (ch === "?") {
-      out += "[^/]"
+      literal += "[^/]"
+    } else if (ch === "{") {
+      // Minimal, well-formed brace alternation: {a,b,c} with no nesting.
+      const close = segment.indexOf("}", i + 1)
+      if (close === -1 || segment.slice(i + 1, close).includes("{")) {
+        throw new Error("unsupported brace expression")
+      }
+      const body = segment.slice(i + 1, close)
+      if (!body.trim()) throw new Error("empty brace expression")
+      out.push(literal)
+      literal = ""
+      groups.push(body.split(",").map((alternative) => alternative.trim()))
+      i = close
+    } else if (ch === "}") {
+      throw new Error("unbalanced brace")
     } else if (ch === "[") {
       const close = segment.indexOf("]", i + 1)
       if (close === -1) {
-        out += "\\["
+        literal += "\\["
       } else {
         let body = segment.slice(i + 1, close)
         if (body.startsWith("!")) body = `^${body.slice(1)}`
-        out += `[${body}]`
+        try {
+          // Probe the resulting class so a malformed range such as [z-a]
+          // is reported, not thrown as an opaque RegExp error.
+          void new RegExp(`[${body}]`)
+        } catch {
+          throw new Error(`unsupported character class "[${body}]"`)
+        }
+        literal += `[${body}]`
+        // Skip past the class; the range probe already validated its body.
         i = close
       }
     } else {
-      out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      literal += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     }
   }
-  return new RegExp(`${out}$`)
+  out.push(literal)
+  if (groups.length > 0) {
+    // Compose one alternative per combination across the brace groups,
+    // joining literal pieces in between.
+    let combos: string[] = [""]
+    for (let index = 0; index < out.length; index++) {
+      const piece = out[index]
+      if (index < groups.length) {
+        combos = combos.flatMap((prefix) => groups[index].map((alternative) => prefix + piece + alternative))
+      } else {
+        combos = combos.map((combo) => combo + piece)
+      }
+    }
+    if (combos.length === 0) throw new Error("empty brace expression")
+    return new RegExp(combos.join("|"))
+  }
+  return new RegExp(out.join(""))
 }
 
 /**

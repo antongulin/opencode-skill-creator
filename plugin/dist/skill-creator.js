@@ -1,7 +1,7 @@
 // @bun
 // skill-creator.ts
 import { tool } from "@opencode-ai/plugin";
-import { join as join10, dirname as dirname3, isAbsolute as isAbsolute2, relative as relative3, sep } from "path";
+import { join as join10, dirname as dirname3, isAbsolute as isAbsolute2, relative as relative3, sep as sep2 } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, rmSync as rmSync3, writeFileSync as writeFileSync8 } from "fs";
@@ -202,7 +202,7 @@ import {
   symlinkSync,
   writeFileSync
 } from "fs";
-import { dirname, isAbsolute, join as join3, parse as parse3, relative, resolve } from "path";
+import { dirname, isAbsolute, join as join3, parse as parse3, relative, resolve, sep } from "path";
 import { randomBytes } from "crypto";
 import { tmpdir as osTmpdir } from "os";
 
@@ -1253,7 +1253,9 @@ function linkOrCopyConfigEntry(source, target, isDirectory) {
 }
 function isInsidePath(parent, child) {
   const rel = relative(parent, child);
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  if (rel === "" || isAbsolute(rel))
+    return false;
+  return rel !== ".." && !rel.startsWith(`..${sep}`);
 }
 function collectRelativeConfigRefs(projectRoot, configFileName) {
   const text = readFileSync3(join3(projectRoot, configFileName), "utf-8");
@@ -1289,6 +1291,7 @@ function collectRelativeConfigRefs(projectRoot, configFileName) {
 function expandConfigGlob(projectRoot, pattern) {
   const segments = pattern.split("/").filter((part) => part !== "" && part !== ".");
   if (segments.some((segment) => segment === "..")) {
+    console.error(`skill_eval: instruction pattern "${pattern}" references a parent directory (".."), which the isolated eval-root mirror cannot mirror; move the reference inside the project if eval runs must see it.`);
     return [];
   }
   if (segments.some((segment) => segment.includes("**"))) {
@@ -1296,9 +1299,10 @@ function expandConfigGlob(projectRoot, pattern) {
     return [];
   }
   let bases = [""];
-  for (const segment of segments) {
+  for (let index = 0;index < segments.length; index++) {
+    const segment = segments[index];
     const next = [];
-    const hasGlob = /[*?[]/.test(segment);
+    const hasGlob = /[*?[{]/.test(segment);
     for (const base of bases) {
       const dirAbsolute = base ? join3(projectRoot, base) : projectRoot;
       if (!existsSync2(dirAbsolute))
@@ -1309,15 +1313,30 @@ function expandConfigGlob(projectRoot, pattern) {
       } catch {
         continue;
       }
-      const matcher = hasGlob ? globSegmentToRegExp(segment) : null;
+      let matcher;
+      if (hasGlob) {
+        try {
+          matcher = globSegmentToRegExp(segment);
+        } catch (error) {
+          console.error(`skill_eval: instruction pattern "${pattern}" contains an unsupported or malformed glob segment "${segment}" (${error instanceof Error ? error.message : String(error)}); the reference is not mirrored into the isolated eval root.`);
+          return [];
+        }
+      } else {
+        matcher = null;
+      }
       for (const entry of entries) {
         if (matcher ? !matcher.test(entry) : entry !== segment)
           continue;
         const childRelative = base ? `${base}/${entry}` : entry;
         const childAbsolute = join3(projectRoot, childRelative);
-        if (statSync(childAbsolute).isDirectory()) {
-          if (segment !== segments[segments.length - 1])
-            next.push(childRelative);
+        if (index !== segments.length - 1) {
+          try {
+            if (!statSync(childAbsolute).isDirectory())
+              continue;
+          } catch {
+            continue;
+          }
+          next.push(childRelative);
         } else {
           next.push(childRelative);
         }
@@ -1330,29 +1349,65 @@ function expandConfigGlob(projectRoot, pattern) {
   return bases;
 }
 function globSegmentToRegExp(segment) {
-  let out = "^";
+  const out = [];
+  let literal = "^";
+  const groups = [];
   for (let i = 0;i < segment.length; i++) {
     const ch = segment[i];
     if (ch === "*") {
-      out += "[^/]*";
+      literal += "[^/]*";
     } else if (ch === "?") {
-      out += "[^/]";
+      literal += "[^/]";
+    } else if (ch === "{") {
+      const close = segment.indexOf("}", i + 1);
+      if (close === -1 || segment.slice(i + 1, close).includes("{")) {
+        throw new Error("unsupported brace expression");
+      }
+      const body = segment.slice(i + 1, close);
+      if (!body.trim())
+        throw new Error("empty brace expression");
+      out.push(literal);
+      literal = "";
+      groups.push(body.split(",").map((alternative) => alternative.trim()));
+      i = close;
+    } else if (ch === "}") {
+      throw new Error("unbalanced brace");
     } else if (ch === "[") {
       const close = segment.indexOf("]", i + 1);
       if (close === -1) {
-        out += "\\[";
+        literal += "\\[";
       } else {
         let body = segment.slice(i + 1, close);
         if (body.startsWith("!"))
           body = `^${body.slice(1)}`;
-        out += `[${body}]`;
+        try {
+          new RegExp(`[${body}]`);
+        } catch {
+          throw new Error(`unsupported character class "[${body}]"`);
+        }
+        literal += `[${body}]`;
         i = close;
       }
     } else {
-      out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      literal += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     }
   }
-  return new RegExp(`${out}$`);
+  out.push(literal);
+  if (groups.length > 0) {
+    let combos = [""];
+    for (let index = 0;index < out.length; index++) {
+      const piece = out[index];
+      if (index < groups.length) {
+        combos = combos.flatMap((prefix) => groups[index].map((alternative) => prefix + piece + alternative));
+      } else {
+        combos = combos.map((combo) => combo + piece);
+      }
+    }
+    if (combos.length === 0)
+      throw new Error("empty brace expression");
+    return new RegExp(combos.join("|"));
+  }
+  return new RegExp(out.join(""));
 }
 function expandConfigReference(projectRoot, reference) {
   const hasGlob = /[*?[\]{}]/.test(reference);
@@ -3649,7 +3704,7 @@ function writeAutoUpdateStatus(path, status) {
 function isInsidePath2(parent, child, pathModule = {
   isAbsolute: isAbsolute2,
   relative: relative3,
-  sep
+  sep: sep2
 }) {
   const rel = pathModule.relative(parent, child);
   return rel === "" || !rel.startsWith("..") && !pathModule.isAbsolute(rel) && !rel.startsWith("/") && !rel.startsWith("\\") && !rel.includes(`..${pathModule.sep}`);
