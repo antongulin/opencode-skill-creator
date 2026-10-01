@@ -1038,10 +1038,33 @@ function buildPluginTools(instance: PluginInstance) {
 // hooks object. The `Plugin` type comes from @opencode-ai/plugin, which stays a
 // type-only, externalized import in the published bundle. V1 hooks are
 // process-wide, so this instance uses the process defaults (cwd project root,
-// `opencode debug skill` enumeration).
+// `opencode debug skill` enumeration). The hooks also carry `dispose`: OpenCode
+// calls it when the plugin is unloaded (registry invalidation / bulk unload),
+// and the review servers this instance started hold TCP ports that would
+// otherwise stay bound and make a reloaded plugin fail to rebind.
 export const SkillCreatorPlugin: Plugin = async () => {
   await initialize()
-  return buildPluginTools(createPluginInstance())
+  const instance = createPluginInstance()
+  const hooks = buildPluginTools(instance)
+  return {
+    ...hooks,
+    async dispose() {
+      // Close only this instance's review servers. Clearing the map before the
+      // best-effort stops keeps a repeated dispose (OpenCode may dispose more
+      // than once) a benign no-op, and never closes another instance's servers.
+      const servers = [...instance.servers.values()]
+      instance.servers.clear()
+      await Promise.all(
+        servers.map(async (server) => {
+          try {
+            await server.stop()
+          } catch {
+            // Best-effort cleanup while the plugin is unloading.
+          }
+        }),
+      )
+    },
+  }
 }
 
 // V2 entrypoint: OpenCode V2 reads the default export's `id` and `setup`.
