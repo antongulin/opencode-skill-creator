@@ -259,6 +259,12 @@ The plugin registers these custom tools that OpenCode can call:
 | `skill_stop_review` | Stop a running review server |
 | `skill_export_static_review` | Generate standalone HTML review file |
 
+### Behavior notes
+
+- **Eval identity is per item, not per query text.** An eval set is measured item by item: two entries with the same query but different labels stay separate results with their own pass/fail, and the optimize loop splits train/test by position so a duplicate query is scored once on each side instead of leaking across the holdout boundary.
+- **Frontmatter reads a bounded block-scalar subset.** `skill_parse` and the eval path understand `|`/`>` descriptions with optional chomping (`+`/`-`) and explicit indent (`1`–`9`) — literal line breaks, folded paragraphs, blank lines, more-indented lines, and clip/strip/keep trailing newlines — matching the YAML reference for that subset. It is not a general YAML parser.
+- **Installer upgrades remove only the plugin's own dropped files.** On startup the plugin records the skill files it copied; a later version removes only those it no longer ships and that you have not modified. Your own files, locally edited or added files, sibling skills, and the preserved `SKILL.md`/`SKILL.md.user-backup` are preserved, and installs predating this tracking keep every file.
+
 ### Description optimization loop
 
 The most impactful feature for skill quality. It treats skill descriptions as a search problem:

@@ -18,6 +18,7 @@ import { tmpdir } from "os"
 import { dirname, join } from "path"
 
 import {
+  aggregateEvalResults,
   assertNoInstalledSkillConflict,
   buildEvalWarnings,
   buildOpenCodeRunCommand,
@@ -26,6 +27,8 @@ import {
   isAbortError,
   runEval,
   symlinkProjectOpenCodeConfig,
+  type EvalItem,
+  type EvalJobResult,
   type EvalResultItem,
   type SkillEnumerator,
 } from "../lib/run-eval"
@@ -40,6 +43,77 @@ const baseResult = (overrides: Partial<EvalResultItem>): EvalResultItem => ({
   errors: 0,
   pass: false,
   ...overrides,
+})
+
+// ---------------------------------------------------------------------------
+// P42-02: aggregation is keyed by eval-set index, not query text. A pure
+// reducer case proves order + per-item separation under deliberately shuffled
+// (out-of-order) completion; the real runEval cases below prove the wiring.
+// ---------------------------------------------------------------------------
+
+test("aggregateEvalResults keys by eval-set index, so duplicate queries stay separate", () => {
+  const evalSet: EvalItem[] = [
+    { query: "dup query", should_trigger: true },
+    { query: "unique query", should_trigger: false },
+    { query: "dup query", should_trigger: false },
+  ]
+  // Deliberately shuffled completion order: item 2's two runs finish first.
+  const jobResults: EvalJobResult[] = [
+    { itemIndex: 2, triggered: false, errored: false },
+    { itemIndex: 2, triggered: false, errored: false },
+    { itemIndex: 0, triggered: true, errored: false },
+    { itemIndex: 0, triggered: false, errored: false },
+    { itemIndex: 1, triggered: false, errored: false },
+    { itemIndex: 1, triggered: false, errored: false },
+  ]
+
+  const results = aggregateEvalResults(evalSet, jobResults, 0.5)
+
+  // One entry per eval-set item, in eval-set ORDER — never merged by query text.
+  expect(results).toHaveLength(3)
+  expect(results.map((r) => r.query)).toEqual([
+    "dup query",
+    "unique query",
+    "dup query",
+  ])
+  // Each duplicate keeps its own should_trigger / runs / pass.
+  expect(results[0]?.should_trigger).toBe(true)
+  expect(results[0]?.triggers).toBe(1)
+  expect(results[0]?.runs).toBe(2)
+  expect(results[0]?.pass).toBe(true)
+  expect(results[2]?.should_trigger).toBe(false)
+  expect(results[2]?.triggers).toBe(0)
+  expect(results[2]?.runs).toBe(2)
+  expect(results[2]?.pass).toBe(true)
+  // The unique negative query stays a single result.
+  expect(results[1]?.runs).toBe(2)
+})
+
+test("aggregateEvalResults counts errors per eval-set item and does not merge a sibling's errors", () => {
+  const evalSet: EvalItem[] = [
+    { query: "shared", should_trigger: true },
+    { query: "shared", should_trigger: true },
+  ]
+  const jobResults: EvalJobResult[] = [
+    // Item 0: one errored run + one successful trigger (still passes rate).
+    { itemIndex: 0, triggered: false, errored: true },
+    { itemIndex: 0, triggered: true, errored: false },
+    // Item 1: two clean triggers, no errors.
+    { itemIndex: 1, triggered: true, errored: false },
+    { itemIndex: 1, triggered: true, errored: false },
+  ]
+
+  const results = aggregateEvalResults(evalSet, jobResults, 0.5)
+
+  expect(results).toHaveLength(2)
+  expect(results[0]?.errors).toBe(1)
+  expect(results[0]?.successful_runs).toBe(1)
+  expect(results[0]?.runs).toBe(2)
+  // An error forces a fail regardless of the observed trigger rate.
+  expect(results[0]?.pass).toBe(false)
+  // The sibling with identical query text keeps zero errors and passes.
+  expect(results[1]?.errors).toBe(0)
+  expect(results[1]?.pass).toBe(true)
 })
 
 test("buildOpenCodeRunCommand uses the build agent by default", () => {
@@ -1320,6 +1394,51 @@ test("runEval aggregates multi-run trigger rates and thresholds", async () => {
     // A negative query that triggers fails its threshold.
     expect(negative.triggers).toBe(2)
     expect(negative.pass).toBe(false)
+    expect(output.summary.total).toBe(2)
+    expect(output.summary.passed).toBe(1)
+    expect(output.summary.failed).toBe(1)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// P42-02 (real path): two eval-set items with IDENTICAL query text but opposite
+// labels must stay two results with their own pass/fail, through the real
+// subprocess harness with concurrency > 1. Query-text aggregation collapsed
+// them into one row and mislabelled it.
+// ---------------------------------------------------------------------------
+
+test("runEval keeps duplicate queries as distinct per-index results in eval-set order", async () => {
+  const harness = makeEvalHarness()
+  try {
+    const output = await runEvalWithScenario(
+      harness,
+      { lines: [triggerLine("read")], exitCode: 0 },
+      {
+        // Same query text twice, opposite labels. Both runs trigger (the fake
+        // always emits), so the positive passes and the negative fails.
+        evalSet: [
+          { query: "duplicate query", should_trigger: true },
+          { query: "duplicate query", should_trigger: false },
+        ],
+        runsPerQuery: 1,
+        numWorkers: 2,
+      },
+    )
+
+    // Two rows, in eval-set order — not merged into one.
+    expect(output.results).toHaveLength(2)
+    expect(output.results.map((r) => r.query)).toEqual([
+      "duplicate query",
+      "duplicate query",
+    ])
+    expect(output.results[0]?.should_trigger).toBe(true)
+    expect(output.results[0]?.pass).toBe(true)
+    expect(output.results[0]?.triggers).toBe(1)
+    expect(output.results[1]?.should_trigger).toBe(false)
+    expect(output.results[1]?.pass).toBe(false)
+    expect(output.results[1]?.triggers).toBe(1)
     expect(output.summary.total).toBe(2)
     expect(output.summary.passed).toBe(1)
     expect(output.summary.failed).toBe(1)

@@ -223,14 +223,13 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     })
     const evalElapsed = (Date.now() - t0) / 1000
 
-    // Split results back into train/test by matching queries
-    const trainQueriesSet = new Set(trainSet.map((q) => q.query))
-    const trainResultList = allResults.results.filter((r) =>
-      trainQueriesSet.has(r.query),
-    )
-    const testResultList = allResults.results.filter(
-      (r) => !trainQueriesSet.has(r.query),
-    )
+    // Split results back into train/test by position. runEval returns one
+    // result per eval-set item in eval-set order (index-keyed aggregation) and
+    // allQueries is [...trainSet, ...testSet], so the slice is exact. Matching
+    // by query text instead would merge a query duplicated across the
+    // train/test boundary and contaminate the holdout score.
+    const trainResultList = allResults.results.slice(0, trainSet.length)
+    const testResultList = allResults.results.slice(trainSet.length)
     const trainWarnings = buildEvalWarnings(trainResultList)
     const testWarnings = buildEvalWarnings(testResultList)
 

@@ -1,7 +1,7 @@
 // @bun
 // skill-creator.ts
 import { tool } from "@opencode-ai/plugin";
-import { join as join10, dirname as dirname3, isAbsolute as isAbsolute2, relative as relative3, sep as sep2 } from "path";
+import { join as join10, dirname as dirname3, isAbsolute as isAbsolute3, relative as relative4, sep as sep3 } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, rmSync as rmSync3, writeFileSync as writeFileSync8 } from "fs";
@@ -145,6 +145,89 @@ function validateSkill(skillPath) {
 // lib/utils.ts
 import { readFileSync as readFileSync2 } from "fs";
 import { join as join2 } from "path";
+var BLOCK_SCALAR_HEADER_RE = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?$/;
+function parseBlockScalarHeader(header) {
+  const literal = header.startsWith("|");
+  const chomp = header.includes("-") ? "strip" : header.includes("+") ? "keep" : "clip";
+  const indentMatch = header.match(/[1-9]/);
+  return { literal, chomp, indent: indentMatch ? Number(indentMatch[0]) : null };
+}
+function stripTrailingCr(line) {
+  return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+function joinLiteral(lines) {
+  return lines.map((line) => line.text).join(`
+`);
+}
+function foldLines(lines) {
+  let out = "";
+  for (let index = 0;index < lines.length; index++) {
+    const line = lines[index];
+    if (index === 0) {
+      out += line.blank ? `
+` : line.text;
+      continue;
+    }
+    const previous = lines[index - 1];
+    if (line.blank) {
+      out += `
+`;
+    } else if (previous.blank) {
+      out += (line.moreIndented ? `
+` : "") + line.text;
+    } else if (previous.moreIndented || line.moreIndented) {
+      out += `
+` + line.text;
+    } else {
+      out += " " + line.text;
+    }
+  }
+  return out;
+}
+function parseBlockScalar(header, lines, startIndex) {
+  const { literal, chomp, indent } = parseBlockScalarHeader(header);
+  const body = [];
+  let blockIndent = indent;
+  let index = startIndex;
+  while (index < lines.length) {
+    const raw = stripTrailingCr(lines[index]);
+    if (raw.trim() === "") {
+      body.push({ text: "", blank: true, moreIndented: false });
+      index++;
+      continue;
+    }
+    const lineIndent = raw.length - raw.trimStart().length;
+    if (blockIndent === null) {
+      if (lineIndent === 0)
+        break;
+      blockIndent = lineIndent;
+    }
+    if (lineIndent < blockIndent)
+      break;
+    body.push({
+      text: raw.slice(blockIndent),
+      blank: false,
+      moreIndented: lineIndent > blockIndent
+    });
+    index++;
+  }
+  let end = body.length;
+  while (end > 0 && body[end - 1].blank)
+    end--;
+  const trailingBlanks = body.length - end;
+  const content = body.slice(0, end);
+  const joined = literal ? joinLiteral(content) : foldLines(content);
+  let suffix = "";
+  if (content.length > 0) {
+    if (chomp === "keep")
+      suffix = `
+`.repeat(Math.max(1, trailingBlanks));
+    else if (chomp === "clip")
+      suffix = `
+`;
+  }
+  return { value: joined + suffix, next: index };
+}
 function parseSkillMd(skillPath) {
   const content = readFileSync2(join2(skillPath, "SKILL.md"), "utf-8");
   const lines = content.split(`
@@ -172,14 +255,10 @@ function parseSkillMd(skillPath) {
       name = line.slice("name:".length).trim().replace(/^['"]|['"]$/g, "");
     } else if (line.startsWith("description:")) {
       const value = line.slice("description:".length).trim();
-      if ([">", "|", ">-", "|-"].includes(value)) {
-        const continuationLines = [];
-        i++;
-        while (i < frontmatterLines.length && (frontmatterLines[i].startsWith("  ") || frontmatterLines[i].startsWith("\t"))) {
-          continuationLines.push(frontmatterLines[i].trim());
-          i++;
-        }
-        description = continuationLines.join(" ");
+      if (BLOCK_SCALAR_HEADER_RE.test(value)) {
+        const parsed = parseBlockScalar(value, frontmatterLines, i + 1);
+        description = parsed.value;
+        i = parsed.next;
         continue;
       } else {
         description = value.replace(/^['"]|['"]$/g, "");
@@ -1602,6 +1681,43 @@ async function runSingleQuery(query, skillName, skillDescription, timeout, proje
     }
   }
 }
+function aggregateEvalResults(evalSet, jobResults, triggerThreshold) {
+  const byItem = new Map;
+  for (const jr of jobResults) {
+    let bucket = byItem.get(jr.itemIndex);
+    if (!bucket) {
+      bucket = { triggers: [], errors: 0 };
+      byItem.set(jr.itemIndex, bucket);
+    }
+    bucket.triggers.push(jr.triggered);
+    if (jr.errored)
+      bucket.errors += 1;
+  }
+  const results = [];
+  for (const [itemIndex, item] of evalSet.entries()) {
+    const bucket = byItem.get(itemIndex);
+    if (!bucket)
+      continue;
+    const triggers = bucket.triggers;
+    const errors = bucket.errors;
+    const successfulRuns = triggers.length - errors;
+    const triggerRate = successfulRuns > 0 ? triggers.filter(Boolean).length / successfulRuns : 0;
+    const shouldTrigger = item.should_trigger;
+    const thresholdPass = shouldTrigger ? triggerRate >= triggerThreshold : triggerRate < triggerThreshold;
+    const didPass = errors === 0 && thresholdPass;
+    results.push({
+      query: item.query,
+      should_trigger: shouldTrigger,
+      trigger_rate: triggerRate,
+      triggers: triggers.filter(Boolean).length,
+      runs: triggers.length,
+      successful_runs: successfulRuns,
+      errors,
+      pass: didPass
+    });
+  }
+  return results;
+}
 async function runEval(opts) {
   const {
     evalSet,
@@ -1621,11 +1737,11 @@ async function runEval(opts) {
   if (signal?.aborted)
     throw abortError();
   const jobs = [];
-  for (const item of evalSet) {
+  evalSet.forEach((item, itemIndex) => {
     for (let r = 0;r < runsPerQuery; r++) {
-      jobs.push({ item, runIdx: r });
+      jobs.push({ item, runIdx: r, itemIndex });
     }
-  }
+  });
   const jobResults = [];
   let idx = 0;
   let abortedDuringRun = false;
@@ -1641,9 +1757,8 @@ async function runEval(opts) {
       try {
         const triggered = await runSingleQuery(job.item.query, skillName, description, timeout, projectRoot, agent, triggerOnly, model, signal, excludedSkillPath);
         jobResults.push({
-          query: job.item.query,
+          itemIndex: job.itemIndex,
           triggered,
-          item: job.item,
           errored: false
         });
       } catch (e) {
@@ -1653,9 +1768,8 @@ async function runEval(opts) {
         }
         console.error(`Warning: query failed: ${e}`);
         jobResults.push({
-          query: job.item.query,
+          itemIndex: job.itemIndex,
           triggered: false,
-          item: job.item,
           errored: true
         });
       }
@@ -1666,36 +1780,7 @@ async function runEval(opts) {
   if (signal?.aborted || abortedDuringRun) {
     throw abortError();
   }
-  const queryTriggers = new Map;
-  const queryErrors = new Map;
-  const queryItems = new Map;
-  for (const jr of jobResults) {
-    if (!queryTriggers.has(jr.query))
-      queryTriggers.set(jr.query, []);
-    queryTriggers.get(jr.query).push(jr.triggered);
-    queryErrors.set(jr.query, (queryErrors.get(jr.query) ?? 0) + (jr.errored ? 1 : 0));
-    queryItems.set(jr.query, jr.item);
-  }
-  const results = [];
-  for (const [query, triggers] of queryTriggers) {
-    const item = queryItems.get(query);
-    const errors = queryErrors.get(query) ?? 0;
-    const successfulRuns = triggers.length - errors;
-    const triggerRate = successfulRuns > 0 ? triggers.filter(Boolean).length / successfulRuns : 0;
-    const shouldTrigger = item.should_trigger;
-    const thresholdPass = shouldTrigger ? triggerRate >= triggerThreshold : triggerRate < triggerThreshold;
-    const didPass = errors === 0 && thresholdPass;
-    results.push({
-      query,
-      should_trigger: shouldTrigger,
-      trigger_rate: triggerRate,
-      triggers: triggers.filter(Boolean).length,
-      runs: triggers.length,
-      successful_runs: successfulRuns,
-      errors,
-      pass: didPass
-    });
-  }
+  const results = aggregateEvalResults(evalSet, jobResults, triggerThreshold);
   const passed = results.filter((r) => r.pass).length;
   const runErrors = results.reduce((acc, r) => acc + r.errors, 0);
   const queriesWithErrors = results.filter((r) => r.errors > 0).length;
@@ -2356,9 +2441,8 @@ ${"=".repeat(60)}`);
       excludedSkillPath: excludePath
     });
     const evalElapsed = (Date.now() - t0) / 1000;
-    const trainQueriesSet = new Set(trainSet.map((q) => q.query));
-    const trainResultList = allResults.results.filter((r) => trainQueriesSet.has(r.query));
-    const testResultList = allResults.results.filter((r) => !trainQueriesSet.has(r.query));
+    const trainResultList = allResults.results.slice(0, trainSet.length);
+    const testResultList = allResults.results.slice(trainSet.length);
     const trainWarnings = buildEvalWarnings(trainResultList);
     const testWarnings = buildEvalWarnings(testResultList);
     const trainPassed = trainResultList.filter((r) => r.pass).length;
@@ -3547,21 +3631,25 @@ function getGoldAdvice(path) {
 }
 
 // lib/skill-install.ts
+import { createHash } from "crypto";
 import {
   copyFileSync,
   existsSync as existsSync7,
+  lstatSync,
   mkdirSync as mkdirSync5,
   readdirSync as readdirSync5,
   readFileSync as readFileSync7,
+  realpathSync as realpathSync2,
   renameSync as renameSync2,
   rmSync as rmSync2,
   statSync as statSync5,
   writeFileSync as writeFileSync7
 } from "fs";
-import { join as join9 } from "path";
+import { isAbsolute as isAbsolute2, join as join9, relative as relative3, sep as sep2 } from "path";
 var SKILL_NAME = "opencode-skill-creator";
 var LEGACY_SKILL_NAME = "skill-creator";
 var INSTALL_VERSION_FILE = ".opencode-skill-creator-version";
+var INSTALL_MANIFEST_FILE = ".opencode-skill-creator-manifest.json";
 function copyDirRecursive(src, dest) {
   mkdirSync5(dest, { recursive: true });
   for (const entry of readdirSync5(src)) {
@@ -3572,6 +3660,136 @@ function copyDirRecursive(src, dest) {
     } else {
       copyFileSync(srcPath, destPath);
     }
+  }
+}
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync7(path)).digest("hex");
+}
+function isSafeRelativePath(rel) {
+  if (typeof rel !== "string" || rel.length === 0)
+    return false;
+  if (rel.includes("\\"))
+    return false;
+  if (isAbsolute2(rel))
+    return false;
+  if (/^[a-zA-Z]:/.test(rel))
+    return false;
+  return rel.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+function readManifest(skillsDir) {
+  const manifestPath = join9(skillsDir, INSTALL_MANIFEST_FILE);
+  if (!existsSync7(manifestPath))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync7(manifestPath, "utf-8"));
+    if (!parsed || typeof parsed !== "object")
+      return null;
+    const record = parsed;
+    if (record.schema !== 1)
+      return null;
+    const files = record.files;
+    if (!files || typeof files !== "object")
+      return null;
+    const checked = {};
+    for (const [rel, hash] of Object.entries(files)) {
+      if (!isSafeRelativePath(rel) || typeof hash !== "string")
+        return null;
+      checked[rel] = hash;
+    }
+    return {
+      schema: 1,
+      packageVersion: typeof record.packageVersion === "string" ? record.packageVersion : "",
+      files: checked
+    };
+  } catch {
+    return null;
+  }
+}
+function writeManifest(skillsDir, manifest) {
+  writeFileSync7(join9(skillsDir, INSTALL_MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}
+`);
+}
+function listBundleFiles(bundledSkillDir) {
+  const files = new Set;
+  const walk = (dir) => {
+    for (const entry of readdirSync5(dir, { withFileTypes: true })) {
+      const abs = join9(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+      } else if (entry.isFile()) {
+        files.add(relative3(bundledSkillDir, abs).split(sep2).join("/"));
+      }
+    }
+  };
+  walk(bundledSkillDir);
+  return files;
+}
+function buildManifest(tmpInstallDir, bundledSkillDir, packageVersion) {
+  const files = {};
+  const walk = (dir) => {
+    for (const entry of readdirSync5(dir, { withFileTypes: true })) {
+      const abs = join9(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+      } else if (entry.isFile()) {
+        files[relative3(tmpInstallDir, abs).split(sep2).join("/")] = sha256File(abs);
+      }
+    }
+  };
+  walk(tmpInstallDir);
+  const bundleSkill = join9(bundledSkillDir, "SKILL.md");
+  if ("SKILL.md" in files && existsSync7(bundleSkill) && sha256File(bundleSkill) !== files["SKILL.md"]) {
+    delete files["SKILL.md"];
+  }
+  return { schema: 1, packageVersion, files };
+}
+function pruneStaleManagedFiles(skillsDir, oldManifest, newBundleFiles) {
+  if (!oldManifest)
+    return;
+  const canonicalRoot = (() => {
+    try {
+      return realpathSync2(skillsDir);
+    } catch {
+      return skillsDir;
+    }
+  })();
+  const isInside = (child) => {
+    const rel = relative3(canonicalRoot, child);
+    if (rel === "" || isAbsolute2(rel))
+      return false;
+    return rel !== ".." && !rel.startsWith(`..${sep2}`);
+  };
+  for (const [rel, recordedHash] of Object.entries(oldManifest.files)) {
+    if (!isSafeRelativePath(rel))
+      continue;
+    if (newBundleFiles.has(rel))
+      continue;
+    const target = join9(skillsDir, rel);
+    let stats;
+    try {
+      stats = lstatSync(target);
+    } catch {
+      continue;
+    }
+    if (!stats.isFile())
+      continue;
+    let canonicalTarget;
+    try {
+      canonicalTarget = realpathSync2(target);
+    } catch {
+      continue;
+    }
+    if (!isInside(canonicalTarget))
+      continue;
+    let onDiskHash;
+    try {
+      onDiskHash = sha256File(target);
+    } catch {
+      continue;
+    }
+    if (onDiskHash !== recordedHash)
+      continue;
+    rmSync2(target, { force: true });
   }
 }
 function defaultBackupTimestamp() {
@@ -3621,6 +3839,7 @@ function ensureBundledSkillInstalled(options) {
   const tmpInstallDir = `${skillsDir}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     if (shouldInstall) {
+      const oldManifest = readManifest(skillsDir);
       copyDirRecursive(options.bundledSkillDir, tmpInstallDir);
       if (existsSync7(userSkillFile)) {
         try {
@@ -3632,13 +3851,17 @@ function ensureBundledSkillInstalled(options) {
           copyFileSync(userSkillFile, join9(tmpInstallDir, "SKILL.md"));
         } catch {}
       }
+      const newManifest = buildManifest(tmpInstallDir, options.bundledSkillDir, options.packageVersion);
+      const newBundleFiles = listBundleFiles(options.bundledSkillDir);
       if (!existsSync7(skillsDir)) {
         renameSync2(tmpInstallDir, skillsDir);
       } else {
+        pruneStaleManagedFiles(skillsDir, oldManifest, newBundleFiles);
         copyDirRecursive(tmpInstallDir, skillsDir);
       }
       writeFileSync7(versionFile, `${options.packageVersion}
 `);
+      writeManifest(skillsDir, newManifest);
     }
     if (existsSync7(legacySkillDir)) {
       archiveLegacySkill({
@@ -3751,9 +3974,9 @@ function writeAutoUpdateStatus(path, status) {
   } catch {}
 }
 function isInsidePath2(parent, child, pathModule = {
-  isAbsolute: isAbsolute2,
-  relative: relative3,
-  sep: sep2
+  isAbsolute: isAbsolute3,
+  relative: relative4,
+  sep: sep3
 }) {
   const rel = pathModule.relative(parent, child);
   return rel === "" || !rel.startsWith("..") && !pathModule.isAbsolute(rel) && !rel.startsWith("/") && !rel.startsWith("\\") && !rel.includes(`..${pathModule.sep}`);

@@ -115,6 +115,30 @@ When the user requests a durable behavior change, record it here or in the relev
   must not add process-global `SIGINT`/`exit` listeners or steal another process's port;
   a busy port still fails loudly.
 
+### Frontmatter reading, eval identity, and managed-install ownership
+
+- `parseSkillMd` (`plugin/lib/utils.ts`) reads a **bounded** block-scalar subset:
+  indicator `|`/`>`, optional chomping (`+`/`-`), and optional explicit indent
+  `1-9` in either order. Scalar values match the YAML reference for that subset
+  (literal keeps breaks/indent/trailing spaces; folded folds adjacent lines and
+  keeps blank lines and more-indented lines; clip/strip/keep chomping). It is
+  **not** a general YAML parser (no anchors, escapes, flow maps). CRLF is
+  normalized in the description value only; `fullContent` bytes are unchanged.
+- Eval results are identified **per eval-set item**, never by query text:
+  `runEval` aggregates by item index and returns one result per item in eval-set
+  order, so duplicate queries keep their own labels/counts and `runLoop` splits
+  train/test **positionally** against `[...trainSet, ...testSet]`. Do not
+  re-key aggregation by query string or match the holdout split by query text.
+- The bundled-skill installer owns only the files it copied: it records them with
+  their sha256 in `.opencode-skill-creator-manifest.json` (schema 1, internal
+  metadata, not a public contract) and on upgrade removes only a recorded,
+  on-disk-unchanged regular file that the new bundle no longer ships and whose
+  real path stays inside the managed dir. It must never delete user-authored,
+  untracked, or locally-modified files, sibling skills, or the preserved
+  `SKILL.md`/`SKILL.md.user-backup`/version/marker. A **legacy install without a
+  manifest prunes nothing**; tracking starts with the next verified copy. Never
+  replace this with a blanket recursive wipe of the managed directory.
+
 ### Credit adopted contributor work in release notes
 
 - When an external contributor's code, tests, or design is adopted — reworked or

@@ -1,16 +1,20 @@
 import { expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import {
   ensureBundledSkillInstalled,
+  INSTALL_MANIFEST_FILE,
   INSTALL_VERSION_FILE,
   LEGACY_SKILL_NAME,
   SKILL_NAME,
@@ -212,6 +216,221 @@ test("ensureBundledSkillInstalled reports user skill backup failures before cont
     expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe(
       "1.2.3\n",
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P42-04: the installer records an internal ownership manifest of the files it
+// copied from the bundle, and prunes only a recorded file that is still
+// unchanged on disk when the new bundle stops shipping it. User-authored,
+// untracked, or locally-modified files are never removed; legacy installs
+// without a manifest prune nothing; malformed/unsafe metadata can never delete
+// outside the managed directory or follow a symlink.
+//
+// All fixtures use a private `configDir` under a temp dir — never a real
+// global install.
+// ---------------------------------------------------------------------------
+
+function writeBundle(
+  root: string,
+  name: string,
+  files: Record<string, string>,
+): string {
+  const dir = join(root, name)
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = join(dir, rel)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, content)
+  }
+  return dir
+}
+
+const SKILL_MD = (name: string) =>
+  ["---", `name: ${name}`, "description: Test bundle.", "---", "", "# T", ""].join("\n")
+
+test("P42-04: a recorded unchanged file the new bundle drops is removed on upgrade", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const siblingSkillDir = join(configDir, "opencode", "skills", "unrelated-skill")
+    mkdirSync(siblingSkillDir, { recursive: true })
+    writeFileSync(join(siblingSkillDir, "SKILL.md"), "third-party\n")
+
+    const v1 = writeBundle(root, "bundle-v1", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "agents/helper.md": "helper\n",
+      "removed-in-v2.md": "stale\n",
+    })
+    const v2 = writeBundle(root, "bundle-v2", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "agents/helper.md": "helper\n",
+    })
+
+    ensureBundledSkillInstalled({ bundledSkillDir: v1, configDir, packageVersion: "1.0.0" })
+    expect(existsSync(join(skillsDir, "removed-in-v2.md"))).toBe(true)
+    // A file the user added on top (never recorded) must survive the upgrade.
+    writeFileSync(join(skillsDir, "user-notes.md"), "keep me\n")
+
+    ensureBundledSkillInstalled({ bundledSkillDir: v2, configDir, packageVersion: "2.0.0" })
+
+    // The recorded, unchanged, now-dropped file is gone...
+    expect(existsSync(join(skillsDir, "removed-in-v2.md"))).toBe(false)
+    // ...while current bundle files, the user's own file, and sibling skills stay.
+    expect(readFileSync(join(skillsDir, "agents", "helper.md"), "utf-8")).toBe("helper\n")
+    expect(readFileSync(join(skillsDir, "user-notes.md"), "utf-8")).toBe("keep me\n")
+    expect(readFileSync(join(siblingSkillDir, "SKILL.md"), "utf-8")).toBe("third-party\n")
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe("2.0.0\n")
+    expect(existsSync(join(skillsDir, INSTALL_MANIFEST_FILE))).toBe(true)
+  })
+})
+
+test("P42-04: a recorded file that was locally modified before being dropped is preserved", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const v1 = writeBundle(root, "bundle-v1", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "removed-in-v2.md": "stale\n",
+    })
+    const v2 = writeBundle(root, "bundle-v2", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+    })
+
+    ensureBundledSkillInstalled({ bundledSkillDir: v1, configDir, packageVersion: "1.0.0" })
+    // The user edits the plugin-owned file; it is no longer the recorded bytes.
+    writeFileSync(join(skillsDir, "removed-in-v2.md"), "locally edited\n")
+
+    ensureBundledSkillInstalled({ bundledSkillDir: v2, configDir, packageVersion: "2.0.0" })
+
+    // Hash mismatch -> never pruned.
+    expect(readFileSync(join(skillsDir, "removed-in-v2.md"), "utf-8")).toBe("locally edited\n")
+  })
+})
+
+test("P42-04: a legacy install without a manifest deletes nothing and starts tracking", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    // Simulate a pre-manifest install: files on disk, no manifest.
+    mkdirSync(skillsDir, { recursive: true })
+    writeFileSync(join(skillsDir, "SKILL.md"), SKILL_MD(SKILL_NAME))
+    writeFileSync(join(skillsDir, INSTALL_VERSION_FILE), "0.0.1\n")
+    writeFileSync(join(skillsDir, "ancient-untracked.md"), "keep me\n")
+    expect(existsSync(join(skillsDir, INSTALL_MANIFEST_FILE))).toBe(false)
+
+    const bundle = writeBundle(root, "bundle", {
+      "SKILL.md": SKILL_MD(SKILL_NAME),
+      "agents/helper.md": "helper\n",
+    })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "9.9.9" })
+
+    // No manifest -> nothing guessed as stale -> the arbitrary file survives.
+    expect(readFileSync(join(skillsDir, "ancient-untracked.md"), "utf-8")).toBe("keep me\n")
+    // Tracking now exists for future upgrades.
+    expect(existsSync(join(skillsDir, INSTALL_MANIFEST_FILE))).toBe(true)
+  })
+})
+
+test("P42-04: unsafe or malformed manifest metadata cannot delete outside the managed dir", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const outsideTarget = join(root, "outside-target.txt")
+    writeFileSync(outsideTarget, "OUTSIDE\n")
+    mkdirSync(skillsDir, { recursive: true })
+    writeFileSync(join(skillsDir, "SKILL.md"), SKILL_MD(SKILL_NAME))
+    writeFileSync(join(skillsDir, INSTALL_VERSION_FILE), "0.0.1\n")
+
+    // An in-dir symlink whose target lives outside the managed directory. Its
+    // recorded hash matches the target, so only the lstat/no-follow rule can
+    // stop it being deleted (which would delete the outside file).
+    const outsideHash = createHash("sha256").update(readFileSync(outsideTarget)).digest("hex")
+    symlinkSync(outsideTarget, join(skillsDir, "linked.md"), "file")
+
+    writeFileSync(
+      join(skillsDir, INSTALL_MANIFEST_FILE),
+      JSON.stringify({
+        schema: 1,
+        packageVersion: "0.0.1",
+        files: {
+          "../evil.txt": outsideHash,
+          "/abs/evil.txt": outsideHash,
+          "nested/../../evil2.txt": outsideHash,
+          "linked.md": outsideHash,
+          "missing.md": outsideHash,
+        },
+      }),
+    )
+
+    const bundle = writeBundle(root, "bundle", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "2.0.0" })
+
+    // Nothing outside the managed dir was touched, and no escape paths appeared.
+    expect(readFileSync(outsideTarget, "utf-8")).toBe("OUTSIDE\n")
+    expect(existsSync(join(root, "evil.txt"))).toBe(false)
+    expect(existsSync(join(root, "config", "opencode", "skills", "evil.txt"))).toBe(false)
+    // The symlink was not followed, so its target and the link itself survive.
+    expect(lstatSync(join(skillsDir, "linked.md")).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(skillsDir, "missing.md"))).toBe(false)
+    // The malformed manifest was replaced by a valid one after a clean upgrade.
+    const manifest = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(manifest.schema).toBe(1)
+    expect(manifest.files["linked.md"]).toBeUndefined()
+  })
+})
+
+test("P42-04: a user's customized SKILL.md and its backup survive an upgrade while new bundle files arrive", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const v1 = writeBundle(root, "bundle-v1", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: v1, configDir, packageVersion: "1.0.0" })
+
+    // The user edits the installed SKILL.md.
+    writeFileSync(join(skillsDir, "SKILL.md"), "USER CUSTOM\n")
+
+    const v2 = writeBundle(root, "bundle-v2", {
+      "SKILL.md": SKILL_MD("bundle-name"),
+      "new-in-v2.md": "new\n",
+    })
+    ensureBundledSkillInstalled({ bundledSkillDir: v2, configDir, packageVersion: "2.0.0" })
+
+    // The user's SKILL.md is preserved (not overwritten by the bundle's copy),
+    // the backup holds the same content, and the new bundle file is installed.
+    expect(readFileSync(join(skillsDir, "SKILL.md"), "utf-8")).toBe("USER CUSTOM\n")
+    expect(readFileSync(join(skillsDir, "SKILL.md.user-backup"), "utf-8")).toBe("USER CUSTOM\n")
+    expect(readFileSync(join(skillsDir, "new-in-v2.md"), "utf-8")).toBe("new\n")
+    // The preserved user file is not recorded as plugin-owned.
+    const manifest = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(manifest.files["SKILL.md"]).toBeUndefined()
+  })
+})
+
+test("P42-04: an install failure is reported and never falsely advances the version", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const v1 = writeBundle(root, "bundle-v1", { "SKILL.md": SKILL_MD(SKILL_NAME) })
+    ensureBundledSkillInstalled({ bundledSkillDir: v1, configDir, packageVersion: "1.0.0" })
+
+    // A broken bundle (a file where a directory is required) makes the copy throw.
+    const brokenBundle = join(root, "broken-bundle")
+    writeFileSync(brokenBundle, "not a directory")
+    const errors: Array<{ message: string; error: unknown }> = []
+
+    expect(() =>
+      ensureBundledSkillInstalled({
+        bundledSkillDir: brokenBundle,
+        configDir,
+        packageVersion: "2.0.0",
+        onError: (message, error) => errors.push({ message, error }),
+      }),
+    ).not.toThrow()
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toBe("Failed to install opencode-skill-creator skill")
+    // The version marker still reflects the last successful install.
+    expect(readFileSync(join(skillsDir, INSTALL_VERSION_FILE), "utf-8")).toBe("1.0.0\n")
   })
 })
 
