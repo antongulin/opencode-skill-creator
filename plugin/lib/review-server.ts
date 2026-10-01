@@ -622,9 +622,10 @@ export interface ServeReviewOptions {
    */
   openBrowser?: boolean
   /**
-   * Test seam: override the browser launcher (defaults to `spawn("open", …)`).
-   * The launcher must forward asynchronous failures (e.g. a missing binary) to
-   * `onError` so the review server can stay up and report the manual URL.
+   * Test seam: override the browser launcher (defaults to the platform-specific
+   * command from `browserOpenCommand`). The launcher must forward asynchronous
+   * failures (e.g. a missing binary) to `onError` so the review server can stay
+   * up and report the manual URL.
    */
   openBrowserImpl?: (url: string, onError: (error: Error) => void) => void
 }
@@ -637,14 +638,44 @@ export function browserOpenDisabledByEnv(
   return value === "0" || value === "false"
 }
 
+/**
+ * The platform-specific command that opens a URL in the user's default browser.
+ * `open` exists only on macOS, so Windows and Linux need their own launcher;
+ * calling the wrong one raises an asynchronous ENOENT (handled by
+ * `defaultOpenBrowser`). Exported for tests to assert the selected command and
+ * arguments without launching a real browser.
+ */
+export function browserOpenCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } {
+  if (platform === "win32") {
+    // `cmd /c start` treats the first quoted argument as the window title, so
+    // pass an explicit empty title before the URL.
+    return { command: "cmd", args: ["/c", "start", "", url] }
+  }
+  if (platform === "darwin") {
+    return { command: "open", args: [url] }
+  }
+  return { command: "xdg-open", args: [url] }
+}
+
 function defaultOpenBrowser(
   url: string,
   onError: (error: Error) => void,
 ): void {
-  const openProc = spawn("open", [url], {
-    detached: true,
-    stdio: "ignore",
-  })
+  const { command, args } = browserOpenCommand(url)
+  let openProc
+  try {
+    openProc = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    })
+  } catch (error) {
+    // A synchronous spawn failure (e.g. the URL is malformed for `cmd`).
+    onError(error instanceof Error ? error : new Error(String(error)))
+    return
+  }
   // A missing launcher (e.g. headless Linux) surfaces as an asynchronous
   // 'error' event, which the caller's try/catch cannot catch. Handle it so an
   // unhandled 'error' does not take the process down.
