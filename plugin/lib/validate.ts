@@ -52,7 +52,10 @@ export function validateSkill(skillPath: string): ValidationResult {
     return { valid: false, message: "SKILL.md not found" }
   }
 
-  const content = readFileSync(skillMdPath, "utf-8")
+  // Normalize CRLF (Windows checkouts with autocrlf) to LF up front — every
+  // regex and split below assumes \n, and a stray \r would either reject valid
+  // frontmatter outright or break per-line key/value matching.
+  const content = readFileSync(skillMdPath, "utf-8").replace(/\r\n/g, "\n")
   if (!content.startsWith("---")) {
     return { valid: false, message: "No YAML frontmatter found" }
   }

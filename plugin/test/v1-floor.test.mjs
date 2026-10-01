@@ -126,14 +126,28 @@ test("built artifact runs real tool behavior on the promised Node floor (>= 18)"
   const consumerDir = join(iso, "consumer")
   const project = join(iso, "project")
   const fixtureSkill = join(iso, "fixture-skill")
+  const crlfFixtureSkill = join(iso, "crlf-fixture-skill")
+  const crlfInvalidFixtureSkill = join(iso, "crlf-invalid-fixture-skill")
   const markerPath = join(iso, "marker.json")
   try {
     mkdirSync(consumerDir, { recursive: true })
     mkdirSync(project, { recursive: true })
     mkdirSync(fixtureSkill, { recursive: true })
+    mkdirSync(crlfFixtureSkill, { recursive: true })
+    mkdirSync(crlfInvalidFixtureSkill, { recursive: true })
     writeFileSync(
       join(fixtureSkill, "SKILL.md"),
       ["---", "name: floor-fixture", "description: A fixture skill parsed by the floor Node.", "---", "", "# Floor fixture", ""].join("\n"),
+    )
+    // Full-CRLF fixtures (delimiters included): the CRLF-tolerant validator path
+    // must work on the real Node 18 floor, and keep its line-3 diagnostic.
+    writeFileSync(
+      join(crlfFixtureSkill, "SKILL.md"),
+      ["---", "name: floor-crlf", 'description: "CRLF: a quoted value."', "---", "", "# Floor CRLF", ""].join("\r\n"),
+    )
+    writeFileSync(
+      join(crlfInvalidFixtureSkill, "SKILL.md"),
+      ["---", "name: floor-crlf-bad", "description: A value with: an unquoted colon.", "---", "", "# Floor CRLF bad", ""].join("\r\n"),
     )
     // Pack into this test's own temp directory so concurrent test files
     // (which also pack for their runtime proofs) never race on one tarball
@@ -170,7 +184,9 @@ import def from "opencode-skill-creator"
 
 const markerPath = ${JSON.stringify(markerPath)}
 const fixtureSkill = ${JSON.stringify(fixtureSkill)}
-const marker = { steps: [], parse: null, validate: null, error: null }
+const crlfFixtureSkill = ${JSON.stringify(crlfFixtureSkill)}
+const crlfInvalidFixtureSkill = ${JSON.stringify(crlfInvalidFixtureSkill)}
+const marker = { steps: [], parse: null, validate: null, crlfValidate: null, crlfInvalidValidate: null, error: null }
 try {
   const added = []
   const ctx = {
@@ -196,6 +212,10 @@ try {
   const byName = new Map(added.map((tool) => [tool.name, tool]))
   marker.parse = JSON.parse((await byName.get("skill_parse").execute({ skillPath: fixtureSkill }, context)).content)
   marker.validate = JSON.parse((await byName.get("skill_validate").execute({ skillPath: fixtureSkill }, context)).content)
+  // Full-CRLF on the real floor: valid stays valid, and the invalid path keeps
+  // its actionable line-3 diagnostic.
+  marker.crlfValidate = JSON.parse((await byName.get("skill_validate").execute({ skillPath: crlfFixtureSkill }, context)).content)
+  marker.crlfInvalidValidate = JSON.parse((await byName.get("skill_validate").execute({ skillPath: crlfInvalidFixtureSkill }, context)).content)
 
   marker.steps.push("setup", "parse", "validate")
   if (cleanup) await cleanup()
@@ -229,6 +249,15 @@ try {
     assert.equal(marker.error, null, `floor Node behavior error: ${marker.error}`)
     assert.equal(marker.parse.name, "floor-fixture")
     assert.equal(marker.validate.valid, true)
+    assert.equal(
+      marker.crlfValidate.valid,
+      true,
+      "full-CRLF skill validates on the Node 18 floor",
+    )
+    assert.equal(marker.crlfValidate.message, "Skill is valid!")
+    assert.equal(marker.crlfInvalidValidate.valid, false)
+    assert.match(marker.crlfInvalidValidate.message, /line 3/)
+    assert.match(marker.crlfInvalidValidate.message, /Hint: quote the value/)
     assert.equal(
       marker.registered.includes("skill_validate"),
       true,

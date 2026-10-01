@@ -28,7 +28,8 @@ function validateSkill(skillPath) {
   if (!existsSync(skillMdPath)) {
     return { valid: false, message: "SKILL.md not found" };
   }
-  const content = readFileSync(skillMdPath, "utf-8");
+  const content = readFileSync(skillMdPath, "utf-8").replace(/\r\n/g, `
+`);
   if (!content.startsWith("---")) {
     return { valid: false, message: "No YAML frontmatter found" };
   }

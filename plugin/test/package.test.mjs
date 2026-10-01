@@ -440,6 +440,64 @@ test("V1 and V2 tool execution return equivalent payloads", async () => {
   }
 })
 
+// ---------------------------------------------------------------------------
+// P40-06: the SHIPPED built bundle must accept a full-CRLF skill and keep the
+// line-number diagnostic. This reaches the wiring/dist boundary that a source
+// unit test cannot, driving the real V1 `server()` and V2 `setup()` executors.
+// ---------------------------------------------------------------------------
+
+/** Write a whole-document CRLF SKILL.md (delimiters included). */
+function writeCrlfSkill(dir, frontmatter) {
+  mkdirSync(dir, { recursive: true })
+  const contents = `---\n${frontmatter}\n---\n\n# CRLF Fixture\n`.split("\n").join("\r\n")
+  writeFileSync(join(dir, "SKILL.md"), contents)
+}
+
+for (const entrypoint of ["V1 server()", "V2 setup()"]) {
+  test(`built skill_validate accepts a full-CRLF skill and keeps the line diagnostic (${entrypoint})`, async () => {
+    const mod = await import(`${distEntryPath}?p40-${entrypoint.replace(/\W+/g, "-")}=${Date.now()}`)
+
+    let validate
+    if (entrypoint === "V1 server()") {
+      const hooks = await withPrivateHome(() => mod.default.server({}))
+      validate = async (skillPath) => JSON.parse(await hooks.tool.skill_validate.execute({ skillPath }))
+    } else {
+      const { added } = await collectV2Tools()
+      const tool = added.find((entry) => entry.name === "skill_validate")
+      validate = async (skillPath) => JSON.parse((await tool.execute({ skillPath })).content)
+    }
+
+    const validDir = mkdtempSync(join(tmpdir(), "osc-crlf-valid-"))
+    const invalidDir = mkdtempSync(join(tmpdir(), "osc-crlf-invalid-"))
+    try {
+      writeCrlfSkill(
+        validDir,
+        'name: pdf-reader\ndescription: "Use for PDF files: reading, extracting."',
+      )
+      writeCrlfSkill(
+        invalidDir,
+        "name: pdf-reader\ndescription: Use for PDF files: reading, extracting.",
+      )
+
+      // Full-CRLF valid fixture → shipped bundle returns valid.
+      assert.deepEqual(await validate(validDir), {
+        valid: true,
+        message: "Skill is valid!",
+      })
+
+      // Full-CRLF invalid fixture → invalid with the actionable line-3 hint.
+      const invalid = await validate(invalidDir)
+      assert.equal(invalid.valid, false)
+      assert.match(invalid.message, /description/)
+      assert.match(invalid.message, /line 3/)
+      assert.match(invalid.message, /Hint: quote the value/)
+    } finally {
+      rmSync(validDir, { recursive: true, force: true })
+      rmSync(invalidDir, { recursive: true, force: true })
+    }
+  })
+}
+
 test("V2 setup cleanup stops active review servers", async () => {
   const tempHome = mkdtempSync(join(tmpdir(), "osc-v2-cleanup-"))
   const workspace = join(tempHome, "workspace")
