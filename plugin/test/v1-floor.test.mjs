@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -188,6 +188,7 @@ test("built artifact runs real tool behavior on the promised Node floor (>= 18)"
       `
 import { mkdirSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
+import { get as httpGet } from "node:http"
 import def from "opencode-skill-creator"
 
 const markerPath = ${JSON.stringify(markerPath)}
@@ -195,7 +196,35 @@ const fixtureSkill = ${JSON.stringify(fixtureSkill)}
 const crlfFixtureSkill = ${JSON.stringify(crlfFixtureSkill)}
 const crlfInvalidFixtureSkill = ${JSON.stringify(crlfInvalidFixtureSkill)}
 const reviewWorkspace = ${JSON.stringify(reviewWorkspace)}
-const marker = { steps: [], parse: null, validate: null, crlfValidate: null, crlfInvalidValidate: null, v1HooksDispose: null, v1Http200: null, v1PortRebindable: null, error: null }
+const marker = { steps: [], parse: null, validate: null, crlfValidate: null, crlfInvalidValidate: null, v1HooksDispose: null, v1Http200: null, v1PortRebindable: null, cleanupError: null, error: null }
+
+// Owned resources are tracked outside the try so the finally ALWAYS releases
+// whatever this probe created, even when it fails before dispose.
+let v2Cleanup = null
+let v1Hooks = null
+
+// Real HTTP status through the built-in core client (no global fetch, no
+// undici keep-alive dispatcher): a one-off agent plus Connection: close and a
+// drained response leave no live socket behind.
+function httpStatus(url) {
+  return new Promise((resolve, reject) => {
+    const req = httpGet(url, { agent: false, headers: { connection: "close" } }, (res) => {
+      res.resume()
+      res.on("end", () => resolve(res.statusCode))
+      res.on("error", reject)
+    })
+    req.setTimeout(10000, () => {
+      req.destroy(new Error("floor probe HTTP request timed out"))
+    })
+    req.on("error", reject)
+  })
+}
+
+function recordCleanupError(label, error) {
+  const text = label + ": " + String(error && error.stack ? error.stack : error)
+  marker.cleanupError = marker.cleanupError ? marker.cleanupError + "\\n" + text : text
+}
+
 try {
   const added = []
   const ctx = {
@@ -213,7 +242,7 @@ try {
 
   // 1. real setup(): tool registration path (the code path that historically
   //    crashed at import/exec time on Node 18/20).
-  const cleanup = await def.setup(ctx)
+  v2Cleanup = await def.setup(ctx)
   marker.registered = added.map((tool) => tool.name).sort()
 
   // 2. real executor behavior: parse and validate produce meaningful output.
@@ -227,22 +256,22 @@ try {
   marker.crlfInvalidValidate = JSON.parse((await byName.get("skill_validate").execute({ skillPath: crlfInvalidFixtureSkill }, context)).content)
 
   marker.steps.push("setup", "parse", "validate")
-  if (cleanup) await cleanup()
+  if (v2Cleanup) await v2Cleanup()
 
   // 3. V1 dispose on the real floor: the V1 hooks expose dispose, and a review
   //    server this instance started releases its port after dispose (real
   //    sockets, not a registration-only claim). The V1 floor binary loads the
   //    object entrypoint via server().
-  const hooks = await def.server({})
-  marker.v1HooksDispose = typeof hooks.dispose === "function"
-  const started = JSON.parse(await hooks.tool.skill_serve_review.execute({
+  v1Hooks = await def.server({})
+  marker.v1HooksDispose = typeof v1Hooks.dispose === "function"
+  const started = JSON.parse(await v1Hooks.tool.skill_serve_review.execute({
     workspace: reviewWorkspace, port: 0, allowPartial: true, openBrowser: false,
   }))
   const port = Number(new URL(started.url).port)
-  // The listener binds 127.0.0.1; fetch the literal address because Node 18's
-  // fetch does not fall back from a ::1 localhost resolution here.
-  marker.v1Http200 = (await fetch("http://127.0.0.1:" + port + "/")).status === 200
-  await hooks.dispose()
+  // The listener binds 127.0.0.1; use the literal address because Node 18 does
+  // not fall back from a ::1 localhost resolution here.
+  marker.v1Http200 = (await httpStatus("http://127.0.0.1:" + port + "/")) === 200
+  await v1Hooks.dispose()
   marker.v1PortRebindable = await new Promise((resolve) => {
     const probe = createServer()
     probe.once("error", () => resolve(false))
@@ -251,16 +280,38 @@ try {
 } catch (error) {
   marker.error = String(error && error.stack ? error.stack : error)
 } finally {
+  // Always release anything this probe created, through the existing tools.
+  // A cleanup failure is recorded (and asserted by the parent test) rather than
+  // hidden, and none of these hold the process open.
+  if (v1Hooks) {
+    try {
+      await v1Hooks.tool.skill_stop_review.execute({ workspace: reviewWorkspace })
+    } catch (error) {
+      recordCleanupError("skill_stop_review", error)
+    }
+    try {
+      await v1Hooks.dispose()
+    } catch (error) {
+      recordCleanupError("v1 dispose", error)
+    }
+  }
+  if (v2Cleanup) {
+    try {
+      await v2Cleanup()
+    } catch (error) {
+      recordCleanupError("v2 cleanup", error)
+    }
+  }
   writeFileSync(markerPath, JSON.stringify(marker))
-  // The real TCP listener + fetch keep-alive sockets can hold the event loop
-  // open on the Node 18 floor. The marker is written synchronously, so exit
-  // explicitly rather than waiting on a socket the test does not own.
-  process.exit(0)
 }
 `,
     )
 
-    const result = execFileSync(
+    // spawnSync captures the child's NATURAL exit status: no forced
+    // process.exit in the probe, so status 0 proves the real Node 18 child
+    // settled on its own after every owned client/server/probe closed. A hang
+    // or an unhandled error surfaces as a non-zero status/timedOut.
+    const result = spawnSync(
       floorBin,
       [join(consumerDir, "floor-behavior.mjs")],
       {
@@ -276,10 +327,21 @@ try {
         timeout: 120_000,
       },
     )
-    void result
+    assert.equal(result.error ?? null, null, `floor child spawn error: ${result.error}`)
+    assert.equal(result.signal, null, `floor child killed by signal ${result.signal}`)
+    assert.equal(
+      result.status,
+      0,
+      `floor child must exit 0 naturally (status=${result.status}, stderr=${result.stderr})`,
+    )
 
     const marker = JSON.parse(readFileSync(markerPath, "utf-8"))
     assert.equal(marker.error, null, `floor Node behavior error: ${marker.error}`)
+    assert.equal(
+      marker.cleanupError,
+      null,
+      `floor probe cleanup must not fail: ${marker.cleanupError}`,
+    )
     assert.equal(marker.parse.name, "floor-fixture")
     assert.equal(marker.validate.valid, true)
     assert.equal(
