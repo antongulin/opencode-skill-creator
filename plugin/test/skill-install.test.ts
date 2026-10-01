@@ -646,6 +646,114 @@ test("P42-04c6: a symlinked managed-dir root does no pruning even if its canonic
   })
 })
 
+// ---------------------------------------------------------------------------
+// P42-04R3 correction: reserved root paths are protected under EVERY ASCII case
+// variant, not only the exact recorded spelling. On a case-insensitive
+// filesystem (default macOS/Windows) `skill.md` resolves to the same file as
+// `SKILL.md`, so a forged manifest naming a case variant could otherwise delete
+// a reserved file.
+//
+// The regression is portable without a filesystem mock: seed the canonical path
+// and, if the variant path does not resolve to it (case-sensitive host), also
+// seed the variant as its own regular file. Either way both protected paths must
+// survive the upgrade.
+// ---------------------------------------------------------------------------
+
+/** True when two paths name the same on-disk file (case-insensitive hosts). */
+function sameFile(a: string, b: string): boolean {
+  if (!existsSync(a) || !existsSync(b)) return false
+  try {
+    return readFileSync(a).equals(readFileSync(b))
+  } catch {
+    return false
+  }
+}
+
+test("P42-04R3: a forged manifest cannot prune a reserved root path under a case variant", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+    const bundle = writeBundle(root, "bundle", { "agents/helper.md": "helper\n" })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "1.0.0" })
+
+    const hash = (s: string) => createHash("sha256").update(Buffer.from(s)).digest("hex")
+
+    // Sentinel user SKILL.md; the backup is refreshed from it on upgrade, so a
+    // matching hash for the case-variant records the post-refresh bytes.
+    writeFileSync(join(skillsDir, "SKILL.md"), "USER CUSTOM SKILL\n")
+    const canonicalBackup = join(skillsDir, "SKILL.md.user-backup")
+    writeFileSync(canonicalBackup, "USER CUSTOM SKILL\n")
+
+    // Uppercase/mixed-case variant of the reserved backup name.
+    const variantBackup = join(skillsDir, "SKILL.MD.USER-BACKUP")
+    const variantIsDistinct = !sameFile(canonicalBackup, variantBackup)
+    if (variantIsDistinct) {
+      // Case-sensitive host: seed the variant as its own regular file so the
+      // pre-fix prune would delete it here too.
+      writeFileSync(variantBackup, "USER CUSTOM SKILL\n")
+    }
+
+    writeFileSync(
+      join(skillsDir, INSTALL_MANIFEST_FILE),
+      JSON.stringify({
+        schema: 1,
+        packageVersion: "1.0.0",
+        files: { "SKILL.MD.USER-BACKUP": hash("USER CUSTOM SKILL\n") },
+      }),
+    )
+
+    ensureBundledSkillInstalled({ bundledSkillDir: bundle, configDir, packageVersion: "2.0.0" })
+
+    // The canonical reserved path survives with the user's content...
+    expect(existsSync(canonicalBackup)).toBe(true)
+    expect(readFileSync(canonicalBackup, "utf-8")).toBe("USER CUSTOM SKILL\n")
+    // ...and so does the case variant (same file on macOS, distinct on Linux).
+    expect(existsSync(variantBackup)).toBe(true)
+    if (variantIsDistinct) {
+      expect(readFileSync(variantBackup, "utf-8")).toBe("USER CUSTOM SKILL\n")
+    }
+    // The rewritten manifest is clean: the reserved variant is not recorded.
+    const rewritten = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(rewritten.files["SKILL.MD.USER-BACKUP"]).toBeUndefined()
+  })
+})
+
+test("P42-04R3: a bundle carrying a reserved root name under a case variant never records or prunes it", () => {
+  withTempDir((root) => {
+    const configDir = join(root, "config")
+    const skillsDir = join(configDir, "opencode", "skills", SKILL_NAME)
+
+    // A bundle that (unusually) ships a case variant of the reserved backup
+    // name, plus a genuinely owned file that a later bundle will drop.
+    const bundleV1 = writeBundle(root, "bundle-v1", {
+      "SKILL.MD.USER-BACKUP": "BUNDLED VARIANT\n",
+      "agents/helper.md": "helper\n",
+      "dropped-in-v2.md": "stale\n",
+    })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundleV1, configDir, packageVersion: "1.0.0" })
+
+    // The reserved case variant must never be recorded as owned/owned-to-prune.
+    const manifest1 = JSON.parse(readFileSync(join(skillsDir, INSTALL_MANIFEST_FILE), "utf-8"))
+    expect(manifest1.files["SKILL.MD.USER-BACKUP"]).toBeUndefined()
+    expect(manifest1.files["SKILL.md.user-backup"]).toBeUndefined()
+    // The real owned file IS tracked (guard: the walker still records non-reserved).
+    expect(manifest1.files["agents/helper.md"]).toBeTypeOf("string")
+
+    // A later bundle that drops the variant and the owned file.
+    const bundleV2 = writeBundle(root, "bundle-v2", { "agents/helper.md": "helper\n" })
+    ensureBundledSkillInstalled({ bundledSkillDir: bundleV2, configDir, packageVersion: "2.0.0" })
+
+    // The genuinely owned, unchanged, now-dropped file is pruned (control)...
+    expect(existsSync(join(skillsDir, "dropped-in-v2.md"))).toBe(false)
+    // ...but the reserved variant is neither owned nor pruned (it survives as a
+    // distinct case file where the FS allows one; on macOS it aliases SKILL.md
+    // which is preserved by the existing contract).
+    const variantAfter = join(skillsDir, "SKILL.MD.USER-BACKUP")
+    const canonicalAfter = join(skillsDir, "SKILL.md.user-backup")
+    expect(existsSync(variantAfter) || existsSync(canonicalAfter)).toBe(true)
+  })
+})
+
 test("archiveLegacySkill disables legacy SKILL.md before moving the legacy directory", () => {
   const source = readFileSync(join(import.meta.dir, "..", "lib", "skill-install.ts"), "utf-8")
   const disableSkillIndex = source.indexOf(

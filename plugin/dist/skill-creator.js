@@ -3656,6 +3656,10 @@ var RESERVED_ROOT_PATHS = new Set([
   INSTALL_VERSION_FILE,
   INSTALL_MANIFEST_FILE
 ]);
+var RESERVED_ROOT_PATHS_LOWER = new Set([...RESERVED_ROOT_PATHS].map((name) => name.toLowerCase()));
+function isReservedRootPath(rel) {
+  return RESERVED_ROOT_PATHS_LOWER.has(rel.toLowerCase());
+}
 function copyDirRecursive(src, dest) {
   mkdirSync5(dest, { recursive: true });
   for (const entry of readdirSync5(src)) {
@@ -3724,7 +3728,7 @@ function listRegularFilesExcludingReserved(root) {
         walk(abs);
       } else if (entry.isFile()) {
         const rel = relative3(root, abs).split(sep2).join("/");
-        if (RESERVED_ROOT_PATHS.has(rel))
+        if (isReservedRootPath(rel))
           continue;
         files.add(rel);
       }
@@ -3770,7 +3774,7 @@ function pruneStaleManagedFiles(skillsDir, oldManifest, newBundleFiles) {
   for (const [rel, recordedHash] of Object.entries(oldManifest.files)) {
     if (!isSafeRelativePath(rel))
       continue;
-    if (RESERVED_ROOT_PATHS.has(rel))
+    if (isReservedRootPath(rel))
       continue;
     if (newBundleFiles.has(rel))
       continue;

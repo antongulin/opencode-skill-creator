@@ -40,6 +40,22 @@ const RESERVED_ROOT_PATHS: ReadonlySet<string> = new Set([
   INSTALL_MANIFEST_FILE,
 ])
 
+/**
+ * Case-insensitive view of the reserved set. On a case-insensitive filesystem
+ * (default macOS/Windows) `skill.md` resolves to the same file as `SKILL.md`,
+ * so an exact-match guard could be bypassed by a manifest naming a case variant.
+ * Compare lowercased ASCII so every case variant of a reserved name is protected
+ * regardless of the host filesystem's case sensitivity.
+ */
+const RESERVED_ROOT_PATHS_LOWER: ReadonlySet<string> = new Set(
+  [...RESERVED_ROOT_PATHS].map((name) => name.toLowerCase()),
+)
+
+/** True when `rel` is a reserved root path under any ASCII case variant. */
+function isReservedRootPath(rel: string): boolean {
+  return RESERVED_ROOT_PATHS_LOWER.has(rel.toLowerCase())
+}
+
 export interface EnsureBundledSkillInstalledOptions {
   bundledSkillDir: string
   configDir: string
@@ -136,7 +152,7 @@ function listRegularFilesExcludingReserved(root: string): Set<string> {
         walk(abs)
       } else if (entry.isFile()) {
         const rel = relative(root, abs).split(sep).join("/")
-        if (RESERVED_ROOT_PATHS.has(rel)) continue
+        if (isReservedRootPath(rel)) continue
         files.add(rel)
       }
     }
@@ -207,7 +223,7 @@ function pruneStaleManagedFiles(
 
   for (const [rel, recordedHash] of Object.entries(oldManifest.files)) {
     if (!isSafeRelativePath(rel)) continue
-    if (RESERVED_ROOT_PATHS.has(rel)) continue // never prune reserved names
+    if (isReservedRootPath(rel)) continue // never prune reserved names (any case)
     if (newBundleFiles.has(rel)) continue
 
     // No path component above the leaf may be a symlink (lstat each ancestor).

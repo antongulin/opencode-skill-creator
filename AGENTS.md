@@ -137,7 +137,10 @@ When the user requests a durable behavior change, record it here or in the relev
   metadata, not a public contract). The reserved root paths — `SKILL.md`,
   `SKILL.md.user-backup`, the version marker, and the manifest itself — are
   protected by name and are **never** tracked or pruned, regardless of any
-  (even well-formed, hash-matching) manifest content. On upgrade it removes only
+  (even well-formed, hash-matching) manifest content. The protection is
+  case-insensitive: every ASCII case variant of a reserved name (for example
+  `skill.md` on a case-insensitive filesystem) is treated as reserved too, so no
+  manifest can name a case variant to reach a protected file. On upgrade it removes only
   a recorded, on-disk-unchanged regular file that the new bundle no longer ships
   and whose path stays inside the managed dir; it lstat-checks the managed dir
   root and every ancestor component and refuses to prune through any symlink.
