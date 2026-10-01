@@ -88,6 +88,11 @@ When the user requests a durable behavior change, record it here or in the relev
 - Automated tests, library use, and tool-based QA must never launch the user's
   default browser. Pass `openBrowser: false` to `serveReview`/`skill_serve_review`
   and/or set `OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0` in the test process.
+- Interactive open uses a platform-specific launcher (`open` on macOS,
+  `xdg-open` on Linux and other Unix platforms, `cmd /c start "" <url>` on
+  Windows), selected by `browserOpenCommand` in `plugin/lib/review-server.ts`.
+  A missing launcher is best-effort: it must never crash the host — the review
+  server stays up and reports the manual URL.
 - The interactive `skill_serve_review` default stays `openBrowser: true` for the
   user-facing flow. Never flip that default for tests by editing the tool; opt out
   per call or via the environment.

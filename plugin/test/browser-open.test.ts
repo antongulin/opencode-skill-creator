@@ -4,7 +4,7 @@ import { tmpdir } from "os"
 import { join } from "path"
 import { fileURLToPath } from "url"
 
-import { browserOpenDisabledByEnv, serveReview } from "../lib/review-server"
+import { browserOpenCommand, browserOpenDisabledByEnv, serveReview } from "../lib/review-server"
 
 const templatePath = fileURLToPath(new URL("../templates/viewer.html", import.meta.url))
 
@@ -31,6 +31,43 @@ test("browserOpenDisabledByEnv recognizes the disable values", () => {
   expect(browserOpenDisabledByEnv({ OPENCODE_SKILL_CREATOR_OPEN_BROWSER: "false" })).toBe(true)
   expect(browserOpenDisabledByEnv({ OPENCODE_SKILL_CREATOR_OPEN_BROWSER: "1" })).toBe(false)
   expect(browserOpenDisabledByEnv({})).toBe(false)
+})
+
+test("browserOpenCommand selects the platform browser launcher and arguments", () => {
+  const url = "http://localhost:3117"
+
+  // macOS: `open <url>`.
+  expect(browserOpenCommand(url, "darwin")).toEqual({
+    command: "open",
+    args: [url],
+  })
+
+  // Windows: `cmd /c start "" <url>` — the empty title keeps the URL from being
+  // consumed as the window title.
+  expect(browserOpenCommand(url, "win32")).toEqual({
+    command: "cmd",
+    args: ["/c", "start", "", url],
+  })
+
+  // Linux and every other Unix platform: `xdg-open <url>`.
+  expect(browserOpenCommand(url, "linux")).toEqual({
+    command: "xdg-open",
+    args: [url],
+  })
+  expect(browserOpenCommand(url, "freebsd")).toEqual({
+    command: "xdg-open",
+    args: [url],
+  })
+
+  // The URL is passed through verbatim, never shell-interpolated.
+  const tricky = "http://localhost:3117/review?a=1&b=2"
+  expect(browserOpenCommand(tricky, "win32").args).toEqual([
+    "/c",
+    "start",
+    "",
+    tricky,
+  ])
+  expect(browserOpenCommand(tricky, "darwin").args).toEqual([tricky])
 })
 
 test("serveReview does not invoke the browser launcher when openBrowser is false", async () => {
@@ -123,9 +160,10 @@ test("serveReview survives a missing browser launcher (async spawn error)", asyn
   }
   try {
     delete process.env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER
-    // Point PATH at an empty directory so the real `spawn("open", …)` fails
-    // with ENOENT — the same asynchronous failure a headless host produces.
-    // This launches no browser: the command lookup itself fails.
+    // Point PATH at an empty directory so the real platform launcher
+    // (`open` on macOS) fails with ENOENT — the same asynchronous failure a
+    // headless host produces. This launches no browser: the command lookup
+    // itself fails.
     emptyBin = mkdtempSync(join(tmpdir(), "osc-empty-bin-"))
     process.env.PATH = emptyBin
 

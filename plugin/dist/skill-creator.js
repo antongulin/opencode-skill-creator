@@ -3254,11 +3254,27 @@ function browserOpenDisabledByEnv(env = process.env) {
   const value = env.OPENCODE_SKILL_CREATOR_OPEN_BROWSER;
   return value === "0" || value === "false";
 }
+function browserOpenCommand(url, platform = process.platform) {
+  if (platform === "win32") {
+    return { command: "cmd", args: ["/c", "start", "", url] };
+  }
+  if (platform === "darwin") {
+    return { command: "open", args: [url] };
+  }
+  return { command: "xdg-open", args: [url] };
+}
 function defaultOpenBrowser(url, onError) {
-  const openProc = spawn2("open", [url], {
-    detached: true,
-    stdio: "ignore"
-  });
+  const { command, args } = browserOpenCommand(url);
+  let openProc;
+  try {
+    openProc = spawn2(command, args, {
+      detached: true,
+      stdio: "ignore"
+    });
+  } catch (error) {
+    onError(error instanceof Error ? error : new Error(String(error)));
+    return;
+  }
   openProc.on("error", onError);
   openProc.unref();
 }
