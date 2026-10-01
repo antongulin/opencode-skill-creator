@@ -915,17 +915,25 @@ try {
   const names = fs.readdirSync(path.join(cwd, ".opencode", "skills"))
   if (names.length) skillName = names[0]
 } catch {}
-if (process.env.SKC_TRACE) {
-  fs.writeFileSync(process.env.SKC_TRACE, JSON.stringify({ pid: process.pid, cwd, marker, directConfig: fs.existsSync(path.join(cwd, "opencode.jsonc")) }))
-}
 const kind = ${JSON.stringify(kind)}
+const writeTrace = () => {
+  if (process.env.SKC_TRACE) {
+    fs.writeFileSync(process.env.SKC_TRACE, JSON.stringify({ pid: process.pid, cwd, marker, directConfig: fs.existsSync(path.join(cwd, "opencode.jsonc")) }))
+  }
+}
 if (${sleep ? "true" : "false"}) {
+  // Install the stubborn SIGTERM handler BEFORE writing the readiness trace, so
+  // a test that observes the trace knows the handler is already in place and the
+  // SIGKILL escalation is what must end the child.
   process.on("SIGTERM", () => {})
+  writeTrace()
   setInterval(() => {}, 1000)
 } else if (kind === "improve") {
+  writeTrace()
   process.stdout.write(JSON.stringify({ type: "text", part: { text: "<new_description>A cancellation fixture description.</new_description>" } }) + "\\n")
   process.exit(0)
 } else {
+  writeTrace()
   process.stdout.write(JSON.stringify({ type: "tool_use", part: { tool: "read", input: { path: skillName + "/SKILL.md" } } }) + "\\n")
   process.exit(0)
 }
@@ -1029,24 +1037,25 @@ test("skill_optimize_loop evaluates the instance root, not the caller cwd", asyn
   }
 })
 
-/** Assert a PID is gone; kill only that owned PID as a last resort. */
-function ensureDead(pid) {
-  const alive = () => {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
+/** Observation only: is this PID still alive? Never mutates the process. */
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
   }
-  if (alive()) {
-    try {
-      process.kill(pid, "SIGKILL")
-    } catch {
-      /* already gone */
-    }
+}
+
+/** Cleanup only: force-kill one OWNED pid. Never used to satisfy an assertion. */
+function killOwnedPid(pid) {
+  if (pid === null || pid === undefined) return
+  if (!pidAlive(pid)) return
+  try {
+    process.kill(pid, "SIGKILL")
+  } catch {
+    /* already gone */
   }
-  return alive()
 }
 
 /**
@@ -1133,7 +1142,10 @@ async function runCancelScenario({ toolName, kind, contextKey, mode = "v2", extr
       }
       pending = null
       assert.equal(caught !== null && caught.name === "AbortError", true, `${toolName}/${mode} aborts explicitly`)
-      assert.equal(ensureDead(childPid), false, `${toolName}/${mode} kills the running child`)
+      // Observation BEFORE any cleanup: the executor's own abort must have
+      // killed the child. Killing in the assertion or finally would let a
+      // non-cancelling bug pass.
+      assert.equal(pidAlive(childPid), false, `${toolName}/${mode} kills the running child`)
     } finally {
       // Always abort and drain the pending call so a failed assertion cannot
       // leave the 60 s child or the plugin instance behind.
@@ -1145,7 +1157,7 @@ async function runCancelScenario({ toolName, kind, contextKey, mode = "v2", extr
           /* expected AbortError */
         }
       }
-      if (childPid !== null) ensureDead(childPid)
+      killOwnedPid(childPid)
       await cleanup()
     }
   } finally {

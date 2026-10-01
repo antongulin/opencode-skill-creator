@@ -209,16 +209,9 @@ test("symlinkProjectOpenCodeConfig expands glob references and never reintroduce
     expect(existsSync(join(evalRoot, ".cursor", "rules", "a.md"))).toBe(true)
     expect(existsSync(join(evalRoot, ".cursor", "rules", "b.md"))).toBe(true)
     expect(readFileSync(join(evalRoot, ".cursor", "rules", "a.md"), "utf-8")).toBe("A rules\n")
-    // The sibling skill is mirrored; the tested skill is never reintroduced by
-    // the `.opencode/skills` directory reference.
-    const tested = join(evalRoot, ".opencode", "skills", "tested-skill")
-    if (existsSync(tested)) {
-      expect(lstatSync(tested).isSymbolicLink()).toBe(true)
-      expect(readlinkSync(tested)).not.toContain("tested-skill")
-    } else {
-      // Not present at all is the expected (excluding) outcome.
-      expect(existsSync(tested)).toBe(false)
-    }
+    // The sibling skill is mirrored; the tested skill must be ABSENT — the
+    // directory reference into `.opencode/skills` must never reintroduce it.
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "tested-skill"))).toBe(false)
   } finally {
     rmSync(projectRoot, { recursive: true, force: true })
     rmSync(evalRoot, { recursive: true, force: true })

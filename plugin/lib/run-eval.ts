@@ -13,7 +13,6 @@
 import {
   cpSync,
   existsSync,
-  globSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -347,24 +346,96 @@ function collectRelativeConfigRefs(projectRoot: string, configFileName: string):
 }
 
 /**
+ * Expand a glob pattern into project-relative matches using only the Node fs
+ * API guaranteed on the promised `node >=18` floor. `fs.globSync` is
+ * deliberately NOT used: it only exists on Node 22+, so importing it would
+ * break the plugin on Node 18/20 before any tool runs. The pattern grammar is
+ * the documented config subset (`<dir>/<file>.md`, `*`, `?`, `[...]`); `**`
+ * recursion is not supported and is reported rather than silently mishandled.
+ */
+function expandConfigGlob(projectRoot: string, pattern: string): string[] {
+  const segments = pattern.split("/").filter((part) => part !== "" && part !== ".")
+  if (segments.some((segment) => segment === "..")) {
+    // Escaping the project root cannot be mirrored as a sibling.
+    return []
+  }
+  if (segments.some((segment) => segment.includes("**"))) {
+    console.error(
+      `skill_eval: instruction pattern "${pattern}" uses "**" recursion, which the isolated eval-root mirror does not support; list explicit files or a single-directory glob such as "dir/*.md".`,
+    )
+    return []
+  }
+
+  let bases: string[] = [""]
+  for (const segment of segments) {
+    const next: string[] = []
+    const hasGlob = /[*?[]/.test(segment)
+    for (const base of bases) {
+      const dirAbsolute = base ? join(projectRoot, base) : projectRoot
+      if (!existsSync(dirAbsolute)) continue
+      let entries: string[]
+      try {
+        entries = readdirSync(dirAbsolute)
+      } catch {
+        continue
+      }
+      const matcher = hasGlob ? globSegmentToRegExp(segment) : null
+      for (const entry of entries) {
+        if (matcher ? !matcher.test(entry) : entry !== segment) continue
+        const childRelative = base ? `${base}/${entry}` : entry
+        const childAbsolute = join(projectRoot, childRelative)
+        // A directory matches only if it is not the last segment (a final
+        // segment must name a file to mirror).
+        if (statSync(childAbsolute).isDirectory()) {
+          if (segment !== segments[segments.length - 1]) next.push(childRelative)
+        } else {
+          next.push(childRelative)
+        }
+      }
+    }
+    bases = next
+    if (bases.length === 0) break
+  }
+  return bases
+}
+
+/** Compile one glob path segment (`a*b?c[de]`) to an anchored RegExp. */
+function globSegmentToRegExp(segment: string): RegExp {
+  let out = "^"
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]
+    if (ch === "*") {
+      out += "[^/]*"
+    } else if (ch === "?") {
+      out += "[^/]"
+    } else if (ch === "[") {
+      const close = segment.indexOf("]", i + 1)
+      if (close === -1) {
+        out += "\\["
+      } else {
+        let body = segment.slice(i + 1, close)
+        if (body.startsWith("!")) body = `^${body.slice(1)}`
+        out += `[${body}]`
+        i = close
+      }
+    } else {
+      out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    }
+  }
+  return new RegExp(`${out}$`)
+}
+
+/**
  * Expand one instruction/reference entry into concrete project-relative files.
- * Glob patterns are expanded with `fs.globSync` (stdlib, no new dependency in
- * the supported Node/Bun runtime); literal paths are used as-is. Paths that
- * resolve outside the project root are reported and skipped rather than
- * silently dropped.
+ * Glob patterns are expanded with the local matcher above; literal paths are
+ * used as-is. Paths that resolve outside the project root are reported and
+ * skipped rather than silently dropped.
  */
 function expandConfigReference(projectRoot: string, reference: string): string[] {
   const hasGlob = /[*?[\]{}]/.test(reference)
   let matches: string[]
   if (hasGlob) {
-    try {
-      matches = globSync(reference, { cwd: projectRoot })
-    } catch (error) {
-      console.error(
-        `skill_eval: could not expand instruction pattern "${reference}" for the isolated eval root: ${String(error)}`,
-      )
-      return []
-    }
+    matches = expandConfigGlob(projectRoot, reference)
   } else {
     matches = [reference]
   }
@@ -401,7 +472,6 @@ function expandConfigReference(projectRoot: string, reference: string): string[]
 function mirrorRootConfigDocuments(
   projectRoot: string,
   evalRoot: string,
-  skillName: string,
 ): void {
   const skillsRoot = join(projectRoot, ".opencode", "skills")
 
@@ -466,7 +536,7 @@ export function symlinkProjectOpenCodeConfig(
   // at the same relative position. OpenCode resolves `instructions` and
   // `{file:...}` references relative to the config document's directory, so the
   // document is only effective if its relative siblings come across too.
-  mirrorRootConfigDocuments(projectRoot, evalRoot, skillName)
+  mirrorRootConfigDocuments(projectRoot, evalRoot)
 }
 
 /**

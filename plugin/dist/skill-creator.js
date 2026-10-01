@@ -193,7 +193,6 @@ function parseSkillMd(skillPath) {
 import {
   cpSync,
   existsSync as existsSync2,
-  globSync,
   mkdirSync,
   mkdtempSync,
   readFileSync as readFileSync3,
@@ -1287,16 +1286,79 @@ function collectRelativeConfigRefs(projectRoot, configFileName) {
   fromFiles(data);
   return referenced;
 }
+function expandConfigGlob(projectRoot, pattern) {
+  const segments = pattern.split("/").filter((part) => part !== "" && part !== ".");
+  if (segments.some((segment) => segment === "..")) {
+    return [];
+  }
+  if (segments.some((segment) => segment.includes("**"))) {
+    console.error(`skill_eval: instruction pattern "${pattern}" uses "**" recursion, which the isolated eval-root mirror does not support; list explicit files or a single-directory glob such as "dir/*.md".`);
+    return [];
+  }
+  let bases = [""];
+  for (const segment of segments) {
+    const next = [];
+    const hasGlob = /[*?[]/.test(segment);
+    for (const base of bases) {
+      const dirAbsolute = base ? join3(projectRoot, base) : projectRoot;
+      if (!existsSync2(dirAbsolute))
+        continue;
+      let entries;
+      try {
+        entries = readdirSync(dirAbsolute);
+      } catch {
+        continue;
+      }
+      const matcher = hasGlob ? globSegmentToRegExp(segment) : null;
+      for (const entry of entries) {
+        if (matcher ? !matcher.test(entry) : entry !== segment)
+          continue;
+        const childRelative = base ? `${base}/${entry}` : entry;
+        const childAbsolute = join3(projectRoot, childRelative);
+        if (statSync(childAbsolute).isDirectory()) {
+          if (segment !== segments[segments.length - 1])
+            next.push(childRelative);
+        } else {
+          next.push(childRelative);
+        }
+      }
+    }
+    bases = next;
+    if (bases.length === 0)
+      break;
+  }
+  return bases;
+}
+function globSegmentToRegExp(segment) {
+  let out = "^";
+  for (let i = 0;i < segment.length; i++) {
+    const ch = segment[i];
+    if (ch === "*") {
+      out += "[^/]*";
+    } else if (ch === "?") {
+      out += "[^/]";
+    } else if (ch === "[") {
+      const close = segment.indexOf("]", i + 1);
+      if (close === -1) {
+        out += "\\[";
+      } else {
+        let body = segment.slice(i + 1, close);
+        if (body.startsWith("!"))
+          body = `^${body.slice(1)}`;
+        out += `[${body}]`;
+        i = close;
+      }
+    } else {
+      out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${out}$`);
+}
 function expandConfigReference(projectRoot, reference) {
   const hasGlob = /[*?[\]{}]/.test(reference);
   let matches;
   if (hasGlob) {
-    try {
-      matches = globSync(reference, { cwd: projectRoot });
-    } catch (error) {
-      console.error(`skill_eval: could not expand instruction pattern "${reference}" for the isolated eval root: ${String(error)}`);
-      return [];
-    }
+    matches = expandConfigGlob(projectRoot, reference);
   } else {
     matches = [reference];
   }
@@ -1312,7 +1374,7 @@ function expandConfigReference(projectRoot, reference) {
   }
   return resolved;
 }
-function mirrorRootConfigDocuments(projectRoot, evalRoot, skillName) {
+function mirrorRootConfigDocuments(projectRoot, evalRoot) {
   const skillsRoot = join3(projectRoot, ".opencode", "skills");
   for (const name of ROOT_CONFIG_FILES) {
     const source = join3(projectRoot, name);
@@ -1353,7 +1415,7 @@ function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName) {
       }
     }
   }
-  mirrorRootConfigDocuments(projectRoot, evalRoot, skillName);
+  mirrorRootConfigDocuments(projectRoot, evalRoot);
 }
 async function runSingleQuery(query, skillName, skillDescription, timeout, projectRoot, agent, triggerOnly, model, signal) {
   if (!SKILL_NAME_RE.test(skillName)) {

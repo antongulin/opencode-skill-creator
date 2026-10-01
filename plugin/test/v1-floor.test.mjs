@@ -82,3 +82,35 @@ test(
     }
   },
 )
+
+// ---------------------------------------------------------------------------
+// Runtime floor: the published artifact must be importable on the engine floor
+// the package promises (`engines.node >= 18`), not just on the dev machine's
+// Node. The correction that first mirrored root config used `fs.globSync`, which
+// only exists on Node 22+, so importing the built plugin on Node 18/20 crashed
+// before any tool ran. This loads the built artifact with an explicit
+// `--no-experimental-*`-style plain import and fails if any imported binding is
+// missing on the running engine.
+// ---------------------------------------------------------------------------
+
+const distEntry = new URL("../dist/skill-creator.js", import.meta.url)
+
+test("built artifact imports on the promised Node floor (>= 18)", async () => {
+  const mod = await import(distEntry.href)
+  // If the module imported, every top-level binding it pulls from `fs` exists on
+  // this Node runtime. Assert the real entrypoints are present.
+  assert.equal(typeof mod.default, "object", "default export present")
+  assert.equal(typeof mod.default.setup, "function", "V2 setup() present")
+  assert.equal(typeof mod.default.server, "function", "V1 server() present")
+
+  // Guard the specific regression: the built artifact must not statically import
+  // Node's `globSync` (Node 22+ only) from `fs`. A static import crashes Node
+  // 18/20 before any tool runs, so scan the whole artifact for the binding.
+  const { readFileSync } = await import("node:fs")
+  const builtSource = readFileSync(distEntry, "utf-8")
+  assert.equal(
+    /\bglobSync\b/.test(builtSource),
+    false,
+    "built artifact must not statically import fs.globSync (Node 22+ only)",
+  )
+})
