@@ -354,10 +354,10 @@ function collectRelativeConfigRefs(projectRoot: string, configFileName: string):
  * deliberately NOT used: it only exists on Node 22+, so importing it would
  * break the plugin on Node 18/20 before any tool runs.
  *
- * Supported grammar: literal directories, `*`, `?`, `[...]`/`[!...]`, and
- * brace alternation `{a,b}`; every segment stays at a single directory level.
- * Anything outside that subset — `**` recursion or a `..` parent reference —
- * is reported on stderr and expands to nothing, so a material config
+ * Supported grammar: literal directories, `*`, `?`, and `[...]`/`[!...]`
+ * classes; every segment stays at a single directory level. Anything outside
+ * that subset — `**` recursion, a `..` parent reference, or brace alternation
+ * — is reported on stderr and expands to nothing, so a material config
  * reference is never silently lost.
  */
 function expandConfigGlob(projectRoot: string, pattern: string): string[] {
@@ -367,6 +367,12 @@ function expandConfigGlob(projectRoot: string, pattern: string): string[] {
     // instead of silently losing the referenced files.
     console.error(
       `skill_eval: instruction pattern "${pattern}" references a parent directory (".."), which the isolated eval-root mirror cannot mirror; move the reference inside the project if eval runs must see it.`,
+    )
+    return []
+  }
+  if (segments.some((segment) => segment.includes("{") || segment.includes("}"))) {
+    console.error(
+      `skill_eval: instruction pattern "${pattern}" uses brace alternation, which the isolated eval-root mirror does not support; list one explicit file or glob per entry such as "dir/a.md", "dir/b.md", or "dir/*.md".`,
     )
     return []
   }
@@ -381,7 +387,7 @@ function expandConfigGlob(projectRoot: string, pattern: string): string[] {
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index]
     const next: string[] = []
-    const hasGlob = /[*?[{]/.test(segment)
+    const hasGlob = /[*?[]/.test(segment)
     for (const base of bases) {
       const dirAbsolute = base ? join(projectRoot, base) : projectRoot
       if (!existsSync(dirAbsolute)) continue
@@ -432,73 +438,41 @@ function expandConfigGlob(projectRoot: string, pattern: string): string[] {
   return bases
 }
 
-/** Compile one glob path segment (`a*b?c[de]`, `{a,b}`) to an anchored RegExp. */
+/**
+ * Compile one glob path segment (`a*b?c[de]`) to a fully anchored RegExp. The
+ * returned pattern always spans the whole segment (`^...$`), never a partial
+ * match. A malformed character class is thrown and reported by the caller.
+ */
 function globSegmentToRegExp(segment: string): RegExp {
-  // Pieces alternate between accumulated literal/glob output and brace
-  // groups, so combinations splice the alternatives in at the brace position
-  // (`{a,b}.md` -> ^a\.md$ | ^b\.md$, not ^\.mda$).
-  const out: string[] = []
-  let literal = "^"
-  const groups: string[][] = []
+  let out = "^"
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i]
     if (ch === "*") {
-      literal += "[^/]*"
+      out += "[^/]*"
     } else if (ch === "?") {
-      literal += "[^/]"
-    } else if (ch === "{") {
-      // Minimal, well-formed brace alternation: {a,b,c} with no nesting.
-      const close = segment.indexOf("}", i + 1)
-      if (close === -1 || segment.slice(i + 1, close).includes("{")) {
-        throw new Error("unsupported brace expression")
-      }
-      const body = segment.slice(i + 1, close)
-      if (!body.trim()) throw new Error("empty brace expression")
-      out.push(literal)
-      literal = ""
-      groups.push(body.split(",").map((alternative) => alternative.trim()))
-      i = close
-    } else if (ch === "}") {
-      throw new Error("unbalanced brace")
+      out += "[^/]"
     } else if (ch === "[") {
       const close = segment.indexOf("]", i + 1)
       if (close === -1) {
-        literal += "\\["
-      } else {
-        let body = segment.slice(i + 1, close)
-        if (body.startsWith("!")) body = `^${body.slice(1)}`
-        try {
-          // Probe the resulting class so a malformed range such as [z-a]
-          // is reported, not thrown as an opaque RegExp error.
-          void new RegExp(`[${body}]`)
-        } catch {
-          throw new Error(`unsupported character class "[${body}]"`)
-        }
-        literal += `[${body}]`
-        // Skip past the class; the range probe already validated its body.
-        i = close
+        throw new Error("unterminated character class (missing ']')")
       }
+      let body = segment.slice(i + 1, close)
+      if (body.startsWith("!")) body = `^${body.slice(1)}`
+      try {
+        // Probe the resulting class so a malformed range such as [z-a]
+        // is reported, not thrown as an opaque RegExp error.
+        void new RegExp(`[${body}]`)
+      } catch {
+        throw new Error(`unsupported character class "[${body}]"`)
+      }
+      out += `[${body}]`
+      // Skip past the class; the range probe already validated its body.
+      i = close
     } else {
-      literal += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     }
   }
-  out.push(literal)
-  if (groups.length > 0) {
-    // Compose one alternative per combination across the brace groups,
-    // joining literal pieces in between.
-    let combos: string[] = [""]
-    for (let index = 0; index < out.length; index++) {
-      const piece = out[index]
-      if (index < groups.length) {
-        combos = combos.flatMap((prefix) => groups[index].map((alternative) => prefix + piece + alternative))
-      } else {
-        combos = combos.map((combo) => combo + piece)
-      }
-    }
-    if (combos.length === 0) throw new Error("empty brace expression")
-    return new RegExp(combos.join("|"))
-  }
-  return new RegExp(out.join(""))
+  return new RegExp(`${out}$`)
 }
 
 /**

@@ -256,8 +256,15 @@ function mirrorCapturingStderr(
         if (entry.isDirectory()) collect(child)
         else {
           mirrored.push(child)
-          const source = lstatSync(child).isSymbolicLink() ? readlinkSync(child) : child
-          contents.set(entry.name, readFileSync(source, "utf-8"))
+          const source = lstatSync(child).isSymbolicLink()
+            ? readlinkSync(child)
+            : child
+          try {
+            contents.set(entry.name, readFileSync(source, "utf-8"))
+          } catch {
+            // A dangling or unreadable mirror entry still counts as mirrored;
+            // per-test assertions read from `mirrored`, not from contents.
+          }
         }
       }
     }
@@ -297,30 +304,30 @@ test("parent-directory glob is reported and never copied out of the project", ()
   expect(mirrored).toEqual([])
 })
 
-test("brace alternation is mirrored with content intact", () => {
-  const { warnings, mirrored, readMirror } = mirrorCapturingStderr((root) => {
+test("brace alternation is reported as unsupported and nothing is mirrored", () => {
+  const { warnings, mirrored } = mirrorCapturingStderr((root) => {
     mkdirSync(join(root, "rules"), { recursive: true })
     writeFileSync(join(root, "rules", "a.md"), "A rules\n")
     writeFileSync(join(root, "rules", "b.md"), "B rules\n")
   }, "rules/{a,b}.md")
-  expect(warnings).toEqual([])
-  expect(mirrored.sort()).toEqual([
-    expect.stringContaining("rules/a.md"),
-    expect.stringContaining("rules/b.md"),
-  ])
-  expect(readMirror("a.md")).toBe("A rules\n")
-  expect(readMirror("b.md")).toBe("B rules\n")
+  expect(warnings.length).toBe(1)
+  expect(warnings[0]).toContain("rules/{a,b}.md")
+  expect(warnings[0]).toContain("brace alternation")
+  expect(mirrored).toEqual([])
 })
 
-test("single-directory glob remains supported", () => {
+test("single-directory glob remains supported and copies only the pattern matches", () => {
   const { warnings, mirrored, readMirror } = mirrorCapturingStderr((root) => {
     mkdirSync(join(root, "rules"), { recursive: true })
-    writeFileSync(join(root, "rules", "a.md"), "A rules\n")
-    writeFileSync(join(root, "rules", "b.md"), "B rules\n")
+    writeFileSync(join(root, "rules", "foo.md"), "A rules\n")
+    // Same prefix, different extension: `*.md` must not select it.
+    writeFileSync(join(root, "rules", "foo.md.bak"), "backup\n")
   }, "rules/*.md")
   expect(warnings).toEqual([])
-  expect(mirrored.length).toBe(2)
-  expect(readMirror("a.md")).toBe("A rules\n")
+  expect(mirrored.length).toBe(1)
+  expect(mirrored[0]).toContain("foo.md")
+  expect(readMirror("foo.md")).toBe("A rules\n")
+  expect(mirrored.some((path) => path.endsWith(".bak"))).toBe(false)
 })
 
 test("repeated directory segments match by position, not by name", () => {
@@ -376,6 +383,20 @@ test("** recursion keeps reporting its unsupported boundary", () => {
   expect(warnings.length).toBe(1)
   expect(warnings[0]).toContain("**")
   expect(mirrored).toEqual([])
+})
+
+test("glob reference into the tested skill's directory never reintroduces it", () => {
+  const { warnings, mirrored } = mirrorCapturingStderr((root) => {
+    // The glob's expansion range overlaps .opencode/skills/<tested-skill>;
+    // the tested skill must stay excluded while its sibling comes across.
+    mkdirSync(join(root, ".opencode", "skills", "tested-skill"), { recursive: true })
+    mkdirSync(join(root, ".opencode", "skills", "sibling-skill"), { recursive: true })
+    writeFileSync(join(root, ".opencode", "skills", "tested-skill", "SKILL.md"), "tested skill body")
+    writeFileSync(join(root, ".opencode", "skills", "sibling-skill", "SKILL.md"), "sibling body")
+  }, ".opencode/skills/*/SKILL.md", "tested-skill")
+  expect(warnings).toEqual([])
+  expect(mirrored.some((path) => path.includes("sibling-skill"))).toBe(true)
+  expect(mirrored.some((path) => path.includes("tested-skill"))).toBe(false)
 })
 
 // ---------------------------------------------------------------------------

@@ -1294,6 +1294,10 @@ function expandConfigGlob(projectRoot, pattern) {
     console.error(`skill_eval: instruction pattern "${pattern}" references a parent directory (".."), which the isolated eval-root mirror cannot mirror; move the reference inside the project if eval runs must see it.`);
     return [];
   }
+  if (segments.some((segment) => segment.includes("{") || segment.includes("}"))) {
+    console.error(`skill_eval: instruction pattern "${pattern}" uses brace alternation, which the isolated eval-root mirror does not support; list one explicit file or glob per entry such as "dir/a.md", "dir/b.md", or "dir/*.md".`);
+    return [];
+  }
   if (segments.some((segment) => segment.includes("**"))) {
     console.error(`skill_eval: instruction pattern "${pattern}" uses "**" recursion, which the isolated eval-root mirror does not support; list explicit files or a single-directory glob such as "dir/*.md".`);
     return [];
@@ -1302,7 +1306,7 @@ function expandConfigGlob(projectRoot, pattern) {
   for (let index = 0;index < segments.length; index++) {
     const segment = segments[index];
     const next = [];
-    const hasGlob = /[*?[{]/.test(segment);
+    const hasGlob = /[*?[]/.test(segment);
     for (const base of bases) {
       const dirAbsolute = base ? join3(projectRoot, base) : projectRoot;
       if (!existsSync2(dirAbsolute))
@@ -1349,65 +1353,33 @@ function expandConfigGlob(projectRoot, pattern) {
   return bases;
 }
 function globSegmentToRegExp(segment) {
-  const out = [];
-  let literal = "^";
-  const groups = [];
+  let out = "^";
   for (let i = 0;i < segment.length; i++) {
     const ch = segment[i];
     if (ch === "*") {
-      literal += "[^/]*";
+      out += "[^/]*";
     } else if (ch === "?") {
-      literal += "[^/]";
-    } else if (ch === "{") {
-      const close = segment.indexOf("}", i + 1);
-      if (close === -1 || segment.slice(i + 1, close).includes("{")) {
-        throw new Error("unsupported brace expression");
-      }
-      const body = segment.slice(i + 1, close);
-      if (!body.trim())
-        throw new Error("empty brace expression");
-      out.push(literal);
-      literal = "";
-      groups.push(body.split(",").map((alternative) => alternative.trim()));
-      i = close;
-    } else if (ch === "}") {
-      throw new Error("unbalanced brace");
+      out += "[^/]";
     } else if (ch === "[") {
       const close = segment.indexOf("]", i + 1);
       if (close === -1) {
-        literal += "\\[";
-      } else {
-        let body = segment.slice(i + 1, close);
-        if (body.startsWith("!"))
-          body = `^${body.slice(1)}`;
-        try {
-          new RegExp(`[${body}]`);
-        } catch {
-          throw new Error(`unsupported character class "[${body}]"`);
-        }
-        literal += `[${body}]`;
-        i = close;
+        throw new Error("unterminated character class (missing ']')");
       }
+      let body = segment.slice(i + 1, close);
+      if (body.startsWith("!"))
+        body = `^${body.slice(1)}`;
+      try {
+        new RegExp(`[${body}]`);
+      } catch {
+        throw new Error(`unsupported character class "[${body}]"`);
+      }
+      out += `[${body}]`;
+      i = close;
     } else {
-      literal += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     }
   }
-  out.push(literal);
-  if (groups.length > 0) {
-    let combos = [""];
-    for (let index = 0;index < out.length; index++) {
-      const piece = out[index];
-      if (index < groups.length) {
-        combos = combos.flatMap((prefix) => groups[index].map((alternative) => prefix + piece + alternative));
-      } else {
-        combos = combos.map((combo) => combo + piece);
-      }
-    }
-    if (combos.length === 0)
-      throw new Error("empty brace expression");
-    return new RegExp(combos.join("|"));
-  }
-  return new RegExp(out.join(""));
+  return new RegExp(`${out}$`);
 }
 function expandConfigReference(projectRoot, reference) {
   const hasGlob = /[*?[\]{}]/.test(reference);

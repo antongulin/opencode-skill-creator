@@ -89,54 +89,34 @@ test(
 // `engines.node >= 18` floor — it must actually RUN there. A static
 // `fs.globSync` import (Node 22+) once crashed the plugin on Node 18/20 before
 // any tool ran, and a source-syntax scan of the bundle cannot prove runtime
-// behavior. So this test provisions a real Node 18 binary as an optional test
-// fixture (`SKC_NODE_FLOOR_BIN`, or — only when the caller opts in via
-// SKC_NODE_FLOOR_FIXTURE pointing at a prepared `node-bin-darwin-arm64`-style
-// tarball — extracted into the approved temp fixture area), packs the plugin,
-// installs the tarball into a private consumer directory, and has the floor
-// Node itself execute real tool behavior (setup() + skill_parse +
-// skill_validate with meaningful outputs). Skips honestly when no floor
-// binary is available: an unprovisioned floor is never claimed as tested.
+// behavior. When the caller pre-provisions a real floor Node binary via
+// SKC_NODE_FLOOR_BIN (test fixture, provisioned outside the tests), this test
+// packs the plugin, npm-installs the tarball into a private consumer
+// directory, and has the floor Node itself execute real tool behavior
+// (setup() + skill_parse + skill_validate with meaningful outputs). Skips
+// honestly when no floor binary is provided: an unprovisioned floor is never
+// claimed as tested.
 // ---------------------------------------------------------------------------
 
-function floorNodeBin() {
-  const explicit = process.env.SKC_NODE_FLOOR_BIN
-  if (explicit) {
-    return existsSync(explicit) ? { bin: explicit, source: "SKC_NODE_FLOOR_BIN" } : null
-  }
-  const fixtureTgz = process.env.SKC_NODE_FLOOR_FIXTURE
-  if (!fixtureTgz || !existsSync(fixtureTgz)) return null
-  // Extract into the approved shared temp area, reusing an existing extracted
-  // fixture when present. Test-only provisioning: never installed globally,
-  // never added to any manifest, and cleaned up with the temp area.
-  const fixtureDir = join(tmpdir(), "skc-node18-fixture")
-  const bin = join(fixtureDir, "package", "bin", "node")
-  if (existsSync(bin)) return { bin, source: `fixture ${fixtureTgz}` }
-  try {
-    execFileSync("tar", ["xzf", fixtureTgz, "package/bin/node"], { cwd: fixtureDir })
-    return { bin, source: `fixture ${fixtureTgz}` }
-  } catch {
-    return null
-  }
-}
-
-test("built artifact runs real tool behavior on the promised Node floor (>= 18)", async () => {
-  const floor = floorNodeBin()
-  const currentMajor = Number(process.versions.node.split(".")[0])
-  if (!floor) {
-    test.skip(
-      `no Node floor binary provisioned (set SKC_NODE_FLOOR_BIN or SKC_NODE_FLOOR_FIXTURE); current node is ${process.version}`,
-    )
+test("built artifact runs real tool behavior on the promised Node floor (>= 18)", async (t) => {
+  const floorBin = process.env.SKC_NODE_FLOOR_BIN
+  if (!floorBin) {
+    t.skip(`no Node floor binary provisioned (set SKC_NODE_FLOOR_BIN); current node is ${process.version}`)
     return
   }
+  if (!existsSync(floorBin)) {
+    assert.fail(`SKC_NODE_FLOOR_BIN does not exist: ${floorBin}`)
+  }
 
-  const floorVersion = execFileSync(floor.bin, ["-v"], { encoding: "utf-8" }).trim()
-  const floorMajor = Number(floorVersion.slice(1).split(".")[0])
-  assert.ok(
-    floorMajor < currentMajor,
-    `floor binary ${floorVersion} must be older than the dev Node ${process.version} to prove the floor`,
+  const floorVersion = execFileSync(floorBin, ["-v"], { encoding: "utf-8" }).trim()
+  const floorMajor = Number(floorVersion.replace(/^v/, "").split(".")[0])
+  // The promised floor IS Node 18; a binary older or newer than it does not
+  // prove the documented engine floor. Prove the actual 18 floor.
+  assert.equal(
+    floorMajor,
+    18,
+    `SKC_NODE_FLOOR_BIN must be a Node 18 binary (the promised engines.node floor), got ${floorVersion}`,
   )
-  assert.ok(floorMajor >= 18, `floor binary must be the promised Node >= 18 floor, got ${floorVersion}`)
 
   // Pack the real artifact and install it into a private consumer directory
   // so the floor Node resolves the plugin exactly like a real consumer (no
@@ -228,7 +208,7 @@ try {
     )
 
     const result = execFileSync(
-      floor.bin,
+      floorBin,
       [join(consumerDir, "floor-behavior.mjs")],
       {
         cwd: consumerDir,
