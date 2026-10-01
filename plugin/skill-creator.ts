@@ -619,6 +619,7 @@ function buildPluginTools(instance: PluginInstance) {
             model: args.model,
             agent: args.agent ?? "build",
             signal: resolveAbortSignal(context),
+            excludedSkillPath: args.skillPath,
           })
 
           return JSON.stringify(result, null, 2)

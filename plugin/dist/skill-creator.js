@@ -1273,6 +1273,20 @@ function referencesSkillsRoot(skillsRoot, absolute) {
   }
   return absolute === skillsRoot || isInsidePath(skillsRoot, absolute);
 }
+function isWithinExcludedSkill(excludedSkillPath, absolute) {
+  if (!excludedSkillPath)
+    return false;
+  const canonicalExcluded = canonicalizeForExclusion(excludedSkillPath);
+  const canonicalAbsolute = canonicalizeForExclusion(absolute);
+  return canonicalAbsolute === canonicalExcluded || isInsidePath(canonicalExcluded, canonicalAbsolute);
+}
+function isAncestorOfExcludedSkill(excludedSkillPath, absolute) {
+  if (!excludedSkillPath)
+    return false;
+  const canonicalExcluded = canonicalizeForExclusion(excludedSkillPath);
+  const canonicalAbsolute = canonicalizeForExclusion(absolute);
+  return isInsidePath(canonicalAbsolute, canonicalExcluded);
+}
 function collectRelativeConfigRefs(projectRoot, configFileName) {
   const text = readFileSync3(join3(projectRoot, configFileName), "utf-8");
   const data = parse2(text);
@@ -1419,7 +1433,7 @@ function expandConfigReference(projectRoot, reference) {
   }
   return resolved;
 }
-function mirrorRootConfigDocuments(projectRoot, evalRoot) {
+function mirrorRootConfigDocuments(projectRoot, evalRoot, excludedSkillPath) {
   const skillsRoot = join3(projectRoot, ".opencode", "skills");
   for (const name of ROOT_CONFIG_FILES) {
     const source = join3(projectRoot, name);
@@ -1430,6 +1444,12 @@ function mirrorRootConfigDocuments(projectRoot, evalRoot) {
       for (const absolute of expandConfigReference(projectRoot, reference)) {
         if (referencesSkillsRoot(skillsRoot, absolute))
           continue;
+        if (isWithinExcludedSkill(excludedSkillPath, absolute))
+          continue;
+        if (isAncestorOfExcludedSkill(excludedSkillPath, absolute)) {
+          console.error(`skill_eval: instruction reference "${reference}" resolves to a directory containing the tested skill; the isolated eval-root mirror refuses to copy that parent tree (it would reintroduce the skill under test). Reference the specific file instead.`);
+          continue;
+        }
         const relativeTarget = relative(projectRoot, absolute);
         const target = join3(evalRoot, relativeTarget);
         if (!isInsidePath(evalRoot, target))
@@ -1439,7 +1459,7 @@ function mirrorRootConfigDocuments(projectRoot, evalRoot) {
     }
   }
 }
-function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName) {
+function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName, excludedSkillPath) {
   const sourceOpenCode = join3(projectRoot, ".opencode");
   if (existsSync2(sourceOpenCode)) {
     const targetOpenCode = join3(evalRoot, ".opencode");
@@ -1448,9 +1468,14 @@ function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName) {
     for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
       if (entry.name === "skills")
         continue;
-      if (referencesSkillsRoot(sourceSkillsRoot, join3(sourceOpenCode, entry.name)))
+      const entryPath = join3(sourceOpenCode, entry.name);
+      if (referencesSkillsRoot(sourceSkillsRoot, entryPath))
         continue;
-      linkOrCopyConfigEntry(join3(sourceOpenCode, entry.name), join3(targetOpenCode, entry.name), entry.isDirectory());
+      if (isWithinExcludedSkill(excludedSkillPath, entryPath))
+        continue;
+      if (isAncestorOfExcludedSkill(excludedSkillPath, entryPath))
+        continue;
+      linkOrCopyConfigEntry(entryPath, join3(targetOpenCode, entry.name), entry.isDirectory());
     }
     const sourceSkills = join3(sourceOpenCode, "skills");
     if (existsSync2(sourceSkills)) {
@@ -1463,9 +1488,9 @@ function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName) {
       }
     }
   }
-  mirrorRootConfigDocuments(projectRoot, evalRoot);
+  mirrorRootConfigDocuments(projectRoot, evalRoot, excludedSkillPath);
 }
-async function runSingleQuery(query, skillName, skillDescription, timeout, projectRoot, agent, triggerOnly, model, signal) {
+async function runSingleQuery(query, skillName, skillDescription, timeout, projectRoot, agent, triggerOnly, model, signal, excludedSkillPath) {
   if (!SKILL_NAME_RE.test(skillName)) {
     throw new Error(`Invalid skill name "${skillName}". Expected kebab-case (lowercase letters, numbers, and hyphens only).`);
   }
@@ -1477,7 +1502,7 @@ async function runSingleQuery(query, skillName, skillDescription, timeout, proje
   const skillsDir = join3(evalRoot, ".opencode", "skills", cleanName);
   const skillFile = join3(skillsDir, "SKILL.md");
   try {
-    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName);
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName, excludedSkillPath);
     mkdirSync(skillsDir, { recursive: true });
     const indentedDesc = skillDescription.split(`
 `).join(`
@@ -1579,7 +1604,8 @@ async function runEval(opts) {
     triggerOnly = true,
     model,
     agent = "build",
-    signal
+    signal,
+    excludedSkillPath
   } = opts;
   if (signal?.aborted)
     throw abortError();
@@ -1602,7 +1628,7 @@ async function runEval(opts) {
       if (!job)
         break;
       try {
-        const triggered = await runSingleQuery(job.item.query, skillName, description, timeout, projectRoot, agent, triggerOnly, model, signal);
+        const triggered = await runSingleQuery(job.item.query, skillName, description, timeout, projectRoot, agent, triggerOnly, model, signal, excludedSkillPath);
         jobResults.push({
           query: job.item.query,
           triggered,
@@ -2270,11 +2296,13 @@ async function runLoop(opts) {
     liveReportPath,
     logDir,
     projectRoot,
-    signal
+    signal,
+    excludedSkillPath
   } = opts;
   if (signal?.aborted)
     throw abortError();
   const { name, description: originalDescription, fullContent: content } = parseSkillMd(skillPath);
+  const excludePath = excludedSkillPath ?? skillPath;
   let currentDescription = descriptionOverride ?? originalDescription;
   let trainSet;
   let testSet;
@@ -2313,7 +2341,8 @@ ${"=".repeat(60)}`);
       triggerOnly,
       model,
       agent,
-      signal
+      signal,
+      excludedSkillPath: excludePath
     });
     const evalElapsed = (Date.now() - t0) / 1000;
     const trainQueriesSet = new Set(trainSet.map((q) => q.query));
@@ -3904,7 +3933,8 @@ function buildPluginTools(instance) {
             triggerOnly: args.triggerOnly ?? true,
             model: args.model,
             agent: args.agent ?? "build",
-            signal: resolveAbortSignal(context)
+            signal: resolveAbortSignal(context),
+            excludedSkillPath: args.skillPath
           });
           return JSON.stringify(result, null, 2);
         }

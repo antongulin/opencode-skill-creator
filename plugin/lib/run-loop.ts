@@ -102,6 +102,12 @@ export interface RunLoopOptions {
   projectRoot: string
   /** Caller-owned cancellation; propagated to eval and improvement children. */
   signal?: AbortSignal
+  /**
+   * The tested skill's own directory (the loop's candidate). Kept out of the
+   * isolated eval root so its original body cannot leak. Omitted -> no extra
+   * exclusion.
+   */
+  excludedSkillPath?: string
 }
 
 export interface LoopHistoryEntry extends HistoryEntry {
@@ -159,11 +165,15 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
     logDir,
     projectRoot,
     signal,
+    excludedSkillPath,
   } = opts
 
   if (signal?.aborted) throw abortError()
   const { name, description: originalDescription, fullContent: content } =
     parseSkillMd(skillPath)
+  // The loop's own candidate is always the skill under test; exclude it (and
+  // any ancestor reference that would copy it) from the isolated eval root.
+  const excludePath = excludedSkillPath ?? skillPath
   let currentDescription = descriptionOverride ?? originalDescription
 
   // Split into train/test if holdout > 0
@@ -209,6 +219,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<RunLoopOutput> {
       model,
       agent,
       signal,
+      excludedSkillPath: excludePath,
     })
     const evalElapsed = (Date.now() - t0) / 1000
 

@@ -345,6 +345,42 @@ function referencesSkillsRoot(skillsRoot: string, absolute: string): boolean {
 }
 
 /**
+ * True when `absolute` is the tested skill's own directory or a descendant of
+ * it (canonical match, so an alias/symlink cannot bypass it). `excludedSkillPath`
+ * is the candidate skill the eval is running: its original `SKILL.md` must never
+ * reach the isolated eval root, so its full body cannot leak into a
+ * description-only eval. Omitted -> no extra exclusion (backward compatible).
+ */
+function isWithinExcludedSkill(
+  excludedSkillPath: string | undefined,
+  absolute: string,
+): boolean {
+  if (!excludedSkillPath) return false
+  const canonicalExcluded = canonicalizeForExclusion(excludedSkillPath)
+  const canonicalAbsolute = canonicalizeForExclusion(absolute)
+  return (
+    canonicalAbsolute === canonicalExcluded ||
+    isInsidePath(canonicalExcluded, canonicalAbsolute)
+  )
+}
+
+/**
+ * True when `absolute` is a canonical ancestor of the tested skill directory.
+ * Mirroring such a reference would copy the whole parent (including the tested
+ * skill) into the eval root, reintroducing the candidate's body. Callers must
+ * refuse it with an accurate diagnostic rather than copy the parent tree.
+ */
+function isAncestorOfExcludedSkill(
+  excludedSkillPath: string | undefined,
+  absolute: string,
+): boolean {
+  if (!excludedSkillPath) return false
+  const canonicalExcluded = canonicalizeForExclusion(excludedSkillPath)
+  const canonicalAbsolute = canonicalizeForExclusion(absolute)
+  return isInsidePath(canonicalAbsolute, canonicalExcluded)
+}
+
+/**
  * Collect the local paths a root config document references (`instructions`
  * entries and `{file:...}` substitutions). Returns each entry unchanged so the
  * caller can distinguish literal paths from glob patterns; absolute paths,
@@ -560,6 +596,7 @@ function expandConfigReference(projectRoot: string, reference: string): string[]
 function mirrorRootConfigDocuments(
   projectRoot: string,
   evalRoot: string,
+  excludedSkillPath?: string,
 ): void {
   const skillsRoot = join(projectRoot, ".opencode", "skills")
 
@@ -574,6 +611,17 @@ function mirrorRootConfigDocuments(
         // skills directory into the isolated eval root. Compare canonical
         // paths so an alias (symlink) into `.opencode/skills` is caught too.
         if (referencesSkillsRoot(skillsRoot, absolute)) continue
+        // Also exclude the tested candidate's own directory wherever it lives,
+        // so a root-config reference cannot leak its full original body. A
+        // reference to an ANCESTOR of the candidate would copy the whole parent
+        // (reintroducing the candidate); refuse it with an accurate warning.
+        if (isWithinExcludedSkill(excludedSkillPath, absolute)) continue
+        if (isAncestorOfExcludedSkill(excludedSkillPath, absolute)) {
+          console.error(
+            `skill_eval: instruction reference "${reference}" resolves to a directory containing the tested skill; the isolated eval-root mirror refuses to copy that parent tree (it would reintroduce the skill under test). Reference the specific file instead.`,
+          )
+          continue
+        }
         const relativeTarget = relative(projectRoot, absolute)
         const target = join(evalRoot, relativeTarget)
         if (!isInsidePath(evalRoot, target)) continue
@@ -587,6 +635,7 @@ export function symlinkProjectOpenCodeConfig(
   projectRoot: string,
   evalRoot: string,
   skillName: string,
+  excludedSkillPath?: string,
 ): void {
   // Mirror the project's `.opencode/` config first (excluding skills), then the
   // direct root config documents and their referenced files. Runs in this order
@@ -600,15 +649,14 @@ export function symlinkProjectOpenCodeConfig(
     const sourceSkillsRoot = join(sourceOpenCode, "skills")
     for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
       if (entry.name === "skills") continue
-      // An entry that is an alias (symlink) into `.opencode/skills` would
-      // otherwise mirror the real skills directory under a different name and
-      // reintroduce the tested skill. Compare canonical paths.
-      if (referencesSkillsRoot(sourceSkillsRoot, join(sourceOpenCode, entry.name))) continue
-      linkOrCopyConfigEntry(
-        join(sourceOpenCode, entry.name),
-        join(targetOpenCode, entry.name),
-        entry.isDirectory(),
-      )
+      const entryPath = join(sourceOpenCode, entry.name)
+      // An entry that is an alias (symlink) into `.opencode/skills` — or into
+      // the tested candidate's own directory — would otherwise mirror the
+      // skill under test under a different name. Compare canonical paths.
+      if (referencesSkillsRoot(sourceSkillsRoot, entryPath)) continue
+      if (isWithinExcludedSkill(excludedSkillPath, entryPath)) continue
+      if (isAncestorOfExcludedSkill(excludedSkillPath, entryPath)) continue
+      linkOrCopyConfigEntry(entryPath, join(targetOpenCode, entry.name), entry.isDirectory())
     }
 
     const sourceSkills = join(sourceOpenCode, "skills")
@@ -630,7 +678,7 @@ export function symlinkProjectOpenCodeConfig(
   // at the same relative position. OpenCode resolves `instructions` and
   // `{file:...}` references relative to the config document's directory, so the
   // document is only effective if its relative siblings come across too.
-  mirrorRootConfigDocuments(projectRoot, evalRoot)
+  mirrorRootConfigDocuments(projectRoot, evalRoot, excludedSkillPath)
 }
 
 /**
@@ -651,6 +699,7 @@ async function runSingleQuery(
   triggerOnly: boolean,
   model?: string,
   signal?: AbortSignal,
+  excludedSkillPath?: string,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(skillName)) {
     throw new Error(
@@ -667,7 +716,7 @@ async function runSingleQuery(
   const skillFile = join(skillsDir, "SKILL.md")
 
   try {
-    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName)
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName, excludedSkillPath)
     mkdirSync(skillsDir, { recursive: true })
 
     // Use YAML block scalar to avoid breaking on quotes in description
@@ -803,6 +852,13 @@ export interface RunEvalOptions {
    * result (`run_errors: 0`).
    */
   signal?: AbortSignal
+  /**
+   * The tested skill's own directory (the candidate the eval runs). Its
+   * original `SKILL.md` must never be mirrored into the isolated eval root, so
+   * a root-config `instructions`/`{file:...}` reference into it (or into an
+   * ancestor that would copy it) is excluded. Omitted -> no extra exclusion.
+   */
+  excludedSkillPath?: string
 }
 
 /**
@@ -825,6 +881,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
     model,
     agent = "build",
     signal,
+    excludedSkillPath,
   } = opts
 
   if (signal?.aborted) throw abortError()
@@ -868,6 +925,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalOutput> {
           triggerOnly,
           model,
           signal,
+          excludedSkillPath,
         )
         jobResults.push({
           query: job.item.query,

@@ -1037,6 +1037,134 @@ test("skill_optimize_loop evaluates the instance root, not the caller cwd", asyn
   }
 })
 
+/**
+ * A real `opencode` stub for V2-T2 that records, from inside the eval child's
+ * cwd, whether the tested candidate's original body is reachable there. It also
+ * confirms the synthetic skill is present and an unrelated sibling is present.
+ */
+function writeContaminationStub(binDir, { secret, notesLabel }) {
+  mkdirSync(binDir, { recursive: true })
+  const fake = `#!/usr/bin/env node
+const fs = require("fs")
+const path = require("path")
+const argv = process.argv.slice(2)
+if (argv.includes("debug") && argv.includes("skill")) { process.stdout.write("[]\\n"); process.exit(0) }
+const cwd = process.cwd()
+const SECRET = ${JSON.stringify(secret)}
+let candidateBodyPresent = false
+let notesPresent = false
+let syntheticSkillPresent = false
+const walk = (base) => {
+  let entries = []
+  try { entries = fs.readdirSync(base, { withFileTypes: true }) } catch { return }
+  for (const e of entries) {
+    const p = path.join(base, e.name)
+    if (e.isDirectory()) walk(p)
+    else {
+      try { const t = fs.readFileSync(p, "utf8"); if (t.includes(SECRET)) candidateBodyPresent = true } catch {}
+      if (e.name === "notes.md" && (() => { try { return fs.readFileSync(p, "utf8").includes(${JSON.stringify(notesLabel)}) } catch { return false } })()) notesPresent = true
+    }
+  }
+}
+walk(cwd)
+try {
+  const skills = fs.readdirSync(path.join(cwd, ".opencode", "skills"))
+  syntheticSkillPresent = skills.some((n) => n.includes("-skill-"))
+} catch {}
+if (process.env.SKC_TRACE) {
+  fs.writeFileSync(process.env.SKC_TRACE, JSON.stringify({ pid: process.pid, cwd, candidateBodyPresent, notesPresent, syntheticSkillPresent }))
+}
+process.stdout.write(JSON.stringify({ type: "tool_use", part: { tool: "read", input: { path: "synthetic/SKILL.md" } } }) + "\\n")
+process.exit(0)
+`
+  const fakePath = join(binDir, "opencode")
+  writeFileSync(fakePath, fake)
+  chmodSync(fakePath, 0o755)
+  return fakePath
+}
+
+/**
+ * V2-T2 (accepted plan): drive the REAL built V2 `skill_eval` and
+ * `skill_optimize_loop` executors with a candidate living INSIDE the selected
+ * project but OUTSIDE `.opencode/skills`, enumeration `[]` (legitimate
+ * uninstalled -> guard passes), and a real stub child. The child must observe
+ * the candidate body ABSENT, the unrelated sibling PRESENT, and the synthetic
+ * skill PRESENT.
+ */
+async function runCandidateIsolation({ toolName }) {
+  const SECRET = `CANDIDATE_BODY_${toolName}`
+  const NOTES = "UNRELATED_NOTES_V2T2"
+  const root = mkdtempSync(join(tmpdir(), `osc-v2t2-${toolName}-`))
+  const target = join(root, "target")
+  const binDir = join(root, "bin")
+  const trace = join(root, "trace.json")
+  const previousPath = process.env.PATH
+  const previousTrace = process.env.SKC_TRACE
+  let cleanup = null
+  try {
+    // Project root with `.opencode/skills` (empty), an unrelated sibling, and a
+    // candidate OUTSIDE `.opencode/skills`. The root config references the
+    // candidate and the sibling.
+    mkdirSync(join(target, ".opencode", "skills"), { recursive: true })
+    mkdirSync(join(target, "candidate"), { recursive: true })
+    writeFileSync(
+      join(target, "candidate", "SKILL.md"),
+      ["---", "name: candidate", "description: Candidate under test.", "---", "", SECRET, ""].join("\n"),
+    )
+    writeFileSync(join(target, "notes.md"), `${NOTES}\n`)
+    writeFileSync(join(target, "opencode.jsonc"), JSON.stringify({
+      instructions: ["./candidate/SKILL.md", "./notes.md"],
+    }))
+    writeContaminationStub(binDir, { secret: SECRET, notesLabel: NOTES })
+    const evalSetPath = join(root, "eval.json")
+    writeFileSync(evalSetPath, JSON.stringify([{ query: "controlled fixture", should_trigger: true }]))
+
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`
+    process.env.SKC_TRACE = trace
+
+    const mod = await import(`${distEntryPath}?v2t2-${toolName}-${Date.now()}`)
+    const added = []
+    // Enumeration returns []: a legitimate uninstalled candidate passes the guard.
+    cleanup = await setupUnderPrivateHome(mod, recordingCtx(added, { skillListData: [], locationDirectory: target }))
+    const tool = added.find((t) => t.name === toolName)
+    await tool.execute(
+      {
+        evalSetPath,
+        skillPath: join(target, "candidate"),
+        numWorkers: 1,
+        runsPerQuery: 1,
+        timeout: 5,
+        maxIterations: 1,
+        holdout: 0,
+        model: "fixture/model",
+      },
+      { signal: new AbortController().signal },
+    )
+    return JSON.parse(readFileSync(trace, "utf-8"))
+  } finally {
+    if (cleanup) await cleanup()
+    if (previousPath === undefined) delete process.env.PATH
+    else process.env.PATH = previousPath
+    if (previousTrace === undefined) delete process.env.SKC_TRACE
+    else process.env.SKC_TRACE = previousTrace
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+test("V2-T2: skill_eval does not expose a candidate outside .opencode/skills", async () => {
+  const recorded = await runCandidateIsolation({ toolName: "skill_eval" })
+  assert.equal(recorded.candidateBodyPresent, false, "candidate body must not reach the eval child")
+  assert.equal(recorded.notesPresent, true, "unrelated sibling must still be mirrored")
+  assert.equal(recorded.syntheticSkillPresent, true, "the synthetic skill must be present")
+})
+
+test("V2-T2: skill_optimize_loop does not expose a candidate outside .opencode/skills", async () => {
+  const recorded = await runCandidateIsolation({ toolName: "skill_optimize_loop" })
+  assert.equal(recorded.candidateBodyPresent, false, "candidate body must not reach the loop eval child")
+  assert.equal(recorded.notesPresent, true, "unrelated sibling must still be mirrored")
+  assert.equal(recorded.syntheticSkillPresent, true, "the synthetic skill must be present")
+})
+
 /** Observation only: is this PID still alive? Never mutates the process. */
 function pidAlive(pid) {
   try {
@@ -1046,7 +1174,6 @@ function pidAlive(pid) {
     return false
   }
 }
-
 /** Cleanup only: force-kill one OWNED pid. Never used to satisfy an assertion. */
 function killOwnedPid(pid) {
   if (pid === null || pid === undefined) return

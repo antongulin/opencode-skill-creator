@@ -532,6 +532,137 @@ test("R2: a genuine brace-alternation pattern still warns through {file:...}", (
 })
 
 // ---------------------------------------------------------------------------
+// V2-T1 (accepted plan): the tested candidate's own body must never reach the
+// isolated eval root when the candidate lives OUTSIDE `.opencode/skills`. A
+// root-config `instructions`/`{file:...}` reference into the candidate (or into
+// an ancestor that would copy it) must not expose the body, while an unrelated
+// sibling stays mirrored and `.opencode/skills` exclusion is unchanged.
+// ---------------------------------------------------------------------------
+
+test("V2-T1: a candidate outside .opencode/skills is never mirrored via root refs", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-candidate-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-candidate-eval-"))
+  const SECRET = "CANDIDATE_BODY_SECRET_V2T1"
+  const warnings: string[] = []
+  const originalError = console.error
+  try {
+    // The tested candidate lives at <project>/candidate, NOT under .opencode.
+    mkdirSync(join(projectRoot, "candidate"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, "candidate", "SKILL.md"),
+      ["---", "name: candidate", "description: Candidate under test.", "---", "", SECRET, ""].join("\n"),
+    )
+    // A legitimate unrelated sibling that MUST still be mirrored (control).
+    writeFileSync(join(projectRoot, "notes.md"), "UNRELATED_NOTES\n")
+    // Root config references the candidate directly AND via {file:...}, plus an
+    // aliased path and the unrelated control.
+    writeFileSync(join(projectRoot, "body.md"), "body via file wrapper\n")
+    writeFileSync(join(projectRoot, "opencode.jsonc"), JSON.stringify({
+      instructions: ["./candidate/SKILL.md", "./candidate", "{file:candidate/SKILL.md}", "./notes.md"],
+    }))
+    // An alias symlink to the candidate directory.
+    symlinkSync(join(projectRoot, "candidate"), join(projectRoot, "candidate-alias"), "dir")
+
+    const excluded = join(projectRoot, "candidate")
+    console.error = (...args: unknown[]) => warnings.push(args.join(" "))
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "candidate", excluded)
+    console.error = originalError
+
+    // The candidate SKILL.md must not be reachable anywhere in the eval root.
+    const reachable = (() => {
+      const found: string[] = []
+      const walk = (base: string) => {
+        for (const entry of readdirSync(base, { withFileTypes: true })) {
+          const child = join(base, entry.name)
+          if (entry.isDirectory()) walk(child)
+          else {
+            const source = lstatSync(child).isSymbolicLink() ? readlinkSync(child) : child
+            try { if (readFileSync(source, "utf-8").includes(SECRET)) found.push(child) } catch { /* unreadable */ }
+          }
+        }
+      }
+      walk(evalRoot)
+      return found
+    })()
+    expect(reachable).toEqual([])
+    expect(existsSync(join(evalRoot, "candidate"))).toBe(false)
+    expect(existsSync(join(evalRoot, "candidate-alias"))).toBe(false)
+    // The unrelated sibling is still mirrored with content intact.
+    expect(readFileSync(join(evalRoot, "notes.md"), "utf-8")).toBe("UNRELATED_NOTES\n")
+  } finally {
+    console.error = originalError
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("V2-T1: an ANCESTOR reference to the candidate is refused, not copied", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-cand-ancestor-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-cand-ancestor-eval-"))
+  const SECRET = "ANCESTOR_SECRET_V2T1"
+  const warnings: string[] = []
+  const originalError = console.error
+  try {
+    // The candidate lives inside `skills/`; a reference to `./skills` (its
+    // ancestor) would copy the whole parent tree and reintroduce the candidate.
+    mkdirSync(join(projectRoot, "skills", "candidate"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, "skills", "candidate", "SKILL.md"),
+      ["---", "name: candidate", "description: x", "---", "", SECRET, ""].join("\n"),
+    )
+    writeFileSync(join(projectRoot, "opencode.jsonc"), JSON.stringify({
+      instructions: ["./skills", "./notes.md"],
+    }))
+    writeFileSync(join(projectRoot, "notes.md"), "UNRELATED_NOTES\n")
+
+    const excluded = join(projectRoot, "skills", "candidate")
+    console.error = (...args: unknown[]) => warnings.push(args.join(" "))
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "candidate", excluded)
+    console.error = originalError
+
+    // The ancestor directory must not be copied (candidate body absent).
+    expect(existsSync(join(evalRoot, "skills"))).toBe(false)
+    expect(warnings.some((w) => /containing the tested skill/.test(w))).toBe(true)
+    // The unrelated sibling is still mirrored.
+    expect(readFileSync(join(evalRoot, "notes.md"), "utf-8")).toBe("UNRELATED_NOTES\n")
+  } finally {
+    console.error = originalError
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("V2-T1: a candidate inside .opencode/skills keeps existing exclusion and sibling mirroring", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-cand-inside-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-cand-inside-eval-"))
+  const SECRET = "INSIDE_SKILLS_SECRET"
+  try {
+    mkdirSync(join(projectRoot, ".opencode", "skills", "candidate"), { recursive: true })
+    mkdirSync(join(projectRoot, ".opencode", "skills", "sibling"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, ".opencode", "skills", "candidate", "SKILL.md"),
+      ["---", "name: candidate", "description: x", "---", "", SECRET, ""].join("\n"),
+    )
+    writeFileSync(join(projectRoot, ".opencode", "skills", "sibling", "SKILL.md"), "sibling body\n")
+    writeFileSync(join(projectRoot, "notes.md"), "UNRELATED_NOTES\n")
+    writeFileSync(join(projectRoot, "opencode.jsonc"), JSON.stringify({
+      instructions: [".opencode/skills", "./notes.md"],
+    }))
+
+    const excluded = join(projectRoot, ".opencode", "skills", "candidate")
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "candidate", excluded)
+
+    // The tested skill is absent; its sibling under .opencode/skills remains.
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "candidate"))).toBe(false)
+    expect(existsSync(join(evalRoot, ".opencode", "skills", "sibling", "SKILL.md"))).toBe(true)
+    expect(readFileSync(join(evalRoot, "notes.md"), "utf-8")).toBe("UNRELATED_NOTES\n")
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Conflict guard (D-01): the enumerator is injected so V2's ctx.skill.list path
 // is exercised deterministically. A null result must abort, not warn-and-skip.
 // ---------------------------------------------------------------------------
