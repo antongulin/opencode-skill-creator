@@ -84,7 +84,7 @@ npx opencode-skill-creator --about
 
 What this command does:
 
-1. Creates/updates `~/.config/opencode/opencode.json`
+1. Updates existing `~/.config/opencode/opencode.jsonc` when present; otherwise creates/updates `opencode.json`
 2. Adds `"opencode-skill-creator"` to the `plugins` array (OpenCode V2), leaving any legacy `plugin` array untouched
 3. Leaves your existing plugins untouched
 
@@ -100,7 +100,7 @@ That's it.
 
 Manual equivalent for the same result:
 
-1. Open (or create) `~/.config/opencode/opencode.json`
+1. Open (or create) `~/.config/opencode/opencode.jsonc` or `~/.config/opencode/opencode.json`
 2. Paste this:
 
 ```json
@@ -142,7 +142,7 @@ Command version:
 npx opencode-skill-creator install --global
 ```
 
-1. Open (or create) `~/.config/opencode/opencode.json`
+1. Open (or create) `~/.config/opencode/opencode.jsonc` or `~/.config/opencode/opencode.json`
 2. Add:
 
 ```json
@@ -163,7 +163,7 @@ Command version:
 npx opencode-skill-creator install --project
 ```
 
-1. Open (or create) `opencode.json` in that project root
+1. Open (or create) `opencode.jsonc` or `opencode.json` in that project root
 2. Add:
 
 ```json
