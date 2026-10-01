@@ -453,8 +453,9 @@ function expandConfigGlob(projectRoot: string, pattern: string): string[] {
         if (matcher ? !matcher.test(entry) : entry !== segment) continue
         const childRelative = base ? `${base}/${entry}` : entry
         const childAbsolute = join(projectRoot, childRelative)
-        // A directory matches only if it is not the last segment (a final
-        // segment must name a file to mirror). Compare the POSITION, not the
+        // Intermediate segments must resolve to directories; the FINAL match
+        // may be a file or a directory (a directory named by the last segment
+        // is mirrored as a directory link). Compare the POSITION, not the
         // segment value: a repeated directory name such as `a/a/*.md` has its
         // final segment equal to an earlier one.
         if (index !== segments.length - 1) {
