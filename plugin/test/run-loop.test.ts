@@ -44,22 +44,23 @@ test("runLoop derives train warnings from train results and prints unique split 
         ? ["all-zero warning"]
         : []
     },
-    runEval: (opts: { projectRoot: string; signal?: AbortSignal }) => {
+    // Aligned contract: one result per eval-set item, in eval-set order
+    // (`runLoop` splits these positionally). A hardcoded out-of-order array
+    // would no longer reflect a supported caller.
+    runEval: (opts: { evalSet: EvalItem[]; projectRoot: string; signal?: AbortSignal }) => {
       evalRoots.push(opts.projectRoot)
       evalSignals.push(opts.signal)
       return {
         skill_name: "warning-skill",
         description: "original description",
-        results: [
-          result("train trigger"),
-          result("train negative", { should_trigger: false }),
-          result("test trigger"),
-        ],
+        results: opts.evalSet.map((item) =>
+          result(item.query, { should_trigger: item.should_trigger }),
+        ),
         warnings: [],
         summary: {
-          passed: 1,
-          failed: 2,
-          total: 3,
+          passed: 0,
+          failed: opts.evalSet.length,
+          total: opts.evalSet.length,
           run_errors: 0,
           queries_with_errors: 0,
         },
