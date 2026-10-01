@@ -167,13 +167,58 @@ test("symlinkProjectOpenCodeConfig mirrors the direct root config documents and 
       }
     }
     // The sibling instruction file the root config references is resolvable
-    // from the eval root because it is a sibling document there too.
+    // from the eval root because it is a sibling document there too. Assert
+    // unconditionally: a missing reference must fail, not silently pass.
     const rulesTarget = join(evalRoot, "local-rules.md")
-    if (existsSync(rulesTarget)) {
-      expect(readFileSync(rulesTarget, "utf-8")).toBe("root rules\n")
-    }
+    expect(existsSync(rulesTarget)).toBe(true)
+    expect(readFileSync(rulesTarget, "utf-8")).toBe("root rules\n")
     // The .opencode document is still mirrored.
     expect(existsSync(join(evalRoot, ".opencode", "opencode.json"))).toBe(true)
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true })
+    rmSync(evalRoot, { recursive: true, force: true })
+  }
+})
+
+test("symlinkProjectOpenCodeConfig expands glob references and never reintroduces the tested skill", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "skill-eval-glob-"))
+  const evalRoot = mkdtempSync(join(tmpdir(), "skill-eval-glob-eval-"))
+  try {
+    // A glob instruction and a directory reference that *contains* the tested
+    // skill under .opencode/skills — neither may smuggle the skill back in.
+    writeFileSync(
+      join(projectRoot, "opencode.jsonc"),
+      JSON.stringify({
+        instructions: [".cursor/rules/*.md", ".opencode/skills"],
+      }),
+    )
+    mkdirSync(join(projectRoot, ".cursor", "rules"), { recursive: true })
+    writeFileSync(join(projectRoot, ".cursor", "rules", "a.md"), "A rules\n")
+    writeFileSync(join(projectRoot, ".cursor", "rules", "b.md"), "B rules\n")
+    mkdirSync(join(projectRoot, ".opencode", "skills", "tested-skill"), { recursive: true })
+    writeFileSync(
+      join(projectRoot, ".opencode", "skills", "tested-skill", "SKILL.md"),
+      "---\nname: tested-skill\n---\n",
+    )
+    mkdirSync(join(projectRoot, ".opencode", "skills", "sibling-skill"), { recursive: true })
+    writeFileSync(join(projectRoot, ".opencode", "skills", "sibling-skill", "SKILL.md"), "x")
+
+    symlinkProjectOpenCodeConfig(projectRoot, evalRoot, "tested-skill")
+
+    // Glob-expanded files come across with content intact.
+    expect(existsSync(join(evalRoot, ".cursor", "rules", "a.md"))).toBe(true)
+    expect(existsSync(join(evalRoot, ".cursor", "rules", "b.md"))).toBe(true)
+    expect(readFileSync(join(evalRoot, ".cursor", "rules", "a.md"), "utf-8")).toBe("A rules\n")
+    // The sibling skill is mirrored; the tested skill is never reintroduced by
+    // the `.opencode/skills` directory reference.
+    const tested = join(evalRoot, ".opencode", "skills", "tested-skill")
+    if (existsSync(tested)) {
+      expect(lstatSync(tested).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(tested)).not.toContain("tested-skill")
+    } else {
+      // Not present at all is the expected (excluding) outcome.
+      expect(existsSync(tested)).toBe(false)
+    }
   } finally {
     rmSync(projectRoot, { recursive: true, force: true })
     rmSync(evalRoot, { recursive: true, force: true })
@@ -325,11 +370,14 @@ function makeEvalHarness(): EvalHarness {
   //   noFinalNewline - omit the trailing newline so the final-buffer path runs
   //   markerFile - write this pid to the file at startup so the test can
   //                observe/await a running child before aborting it
+  //   startLog   - append `{pid,cwd}` (one JSON line per start) so a test can
+  //                count started jobs and later verify their temp roots are gone
   const fake = `#!/usr/bin/env node
 const fs = require("fs")
 const path = require("path")
 const scenario = JSON.parse(fs.readFileSync(process.env.SKC_EVAL_SCENARIO, "utf-8"))
 const cwd = process.cwd()
+if (scenario.startLog) fs.appendFileSync(scenario.startLog, JSON.stringify({ pid: process.pid, cwd }) + "\\n")
 let cleanName = "unknown"
 try {
   const skills = fs.readdirSync(path.join(cwd, ".opencode", "skills"))
@@ -340,11 +388,13 @@ if (scenario.argvFile) fs.writeFileSync(scenario.argvFile, JSON.stringify(proces
 if (scenario.envFile) {
   const rootConfigs = ["opencode.json", "opencode.jsonc"].filter((name) => fs.existsSync(path.join(cwd, name)))
   const instructionFiles = ["local-rules.md"].filter((name) => fs.existsSync(path.join(cwd, name)))
+  const instructionContent = instructionFiles.length ? fs.readFileSync(path.join(cwd, "local-rules.md"), "utf-8") : null
   fs.writeFileSync(scenario.envFile, JSON.stringify({
     cwd: fs.realpathSync(cwd),
     pwd: process.env.PWD ? fs.realpathSync(process.env.PWD) : null,
     rootConfigs,
     instructionFiles,
+    instructionContent,
     testedSkillPresent: fs.existsSync(path.join(cwd, ".opencode", "skills", "demo-skill")),
   }))
 }
@@ -683,8 +733,10 @@ test("runEval child root carries the direct root config, referenced instructions
     expect(layout.pwd).toBe(layout.cwd)
     // The direct root document the project defines is present in the eval root.
     expect(layout.rootConfigs).toContain("opencode.jsonc")
-    // Its relative instruction file is carried across, so it stays resolvable.
+    // Its relative instruction file is carried across with its CONTENT intact,
+    // so it stays resolvable and effective from the selected root.
     expect(layout.instructionFiles).toContain("local-rules.md")
+    expect(layout.instructionContent).toBe("project local rules\n")
     // The skill under test is excluded so it cannot steal triggers.
     expect(layout.testedSkillPresent).toBe(false)
   } finally {
@@ -697,14 +749,15 @@ test("runEval child root carries the direct root config, referenced instructions
 // reported as an explicit AbortError, never a scored negative.
 // ---------------------------------------------------------------------------
 
-test("runEval aborts with AbortError, stops queued jobs and kills running children", async () => {
+test("runEval aborts with AbortError, stops queued jobs, kills the child and cleans its root", async () => {
   const harness = makeEvalHarness()
-  const markerFile = join(harness.root, "child.pid")
+  const startLog = join(harness.root, "starts.log")
   const controller = new AbortController()
+  let pending: Promise<unknown> | undefined
   try {
-    const pending = runEvalWithScenario(
+    pending = runEvalWithScenario(
       harness,
-      { lines: [], sleepMs: 30_000, markerFile, exitCode: 0 },
+      { lines: [], sleepMs: 30_000, startLog, exitCode: 0 },
       {
         evalSet: [
           { query: "job-a", should_trigger: true },
@@ -717,13 +770,16 @@ test("runEval aborts with AbortError, stops queued jobs and kills running childr
       },
     )
 
-    // Wait until the first child has actually started, then abort.
+    // Wait until the first child has actually started (its start record is
+    // appended), then abort.
     const deadline = Date.now() + 5_000
-    while (!existsSync(markerFile) && Date.now() < deadline) {
+    while (!existsSync(startLog) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
-    expect(existsSync(markerFile)).toBe(true)
-    const childPid = Number(readFileSync(markerFile, "utf-8"))
+    const starts = () => readFileSync(startLog, "utf-8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    const started = starts()
+    expect(started.length).toBeGreaterThan(0)
+    const first = started[0]
 
     const startedAt = Date.now()
     controller.abort()
@@ -735,57 +791,81 @@ test("runEval aborts with AbortError, stops queued jobs and kills running childr
       caught = error
     }
     expect(isAbortError(caught)).toBe(true)
-    // Did not run the full 30 s child, and did not start the remaining jobs.
+    // Did not run the full 30 s child.
     expect(Date.now() - startedAt).toBeLessThan(5_000)
+
+    // Exactly one job started: the queued jobs (numWorkers 1) never spawned.
+    expect(starts()).toHaveLength(1)
 
     const alive = (() => {
       try {
-        process.kill(childPid, 0)
+        process.kill(first.pid, 0)
         return true
       } catch {
         return false
       }
     })()
     expect(alive).toBe(false)
+
+    // Every started child's isolated eval root was removed after the run.
+    const allStarted = starts()
+    for (const entry of allStarted) {
+      expect(existsSync(entry.cwd)).toBe(false)
+    }
   } finally {
+    controller.abort()
+    try {
+      await pending
+    } catch {
+      /* rejected with AbortError; nothing to do */
+    }
     harness.cleanup()
   }
 })
 
 test("runEval rejects a pre-aborted signal without spawning any child", async () => {
   const harness = makeEvalHarness()
-  const markerFile = join(harness.root, "child.pid")
+  const startLog = join(harness.root, "starts.log")
   const controller = new AbortController()
   controller.abort()
+  let pending: Promise<unknown> | undefined
   try {
+    pending = runEvalWithScenario(
+      harness,
+      { lines: [triggerLine("read")], startLog, exitCode: 0 },
+      {
+        evalSet: [{ query: "never", should_trigger: true }],
+        signal: controller.signal,
+      },
+    )
     let caught: unknown
     try {
-      await runEvalWithScenario(
-        harness,
-        { lines: [triggerLine("read")], markerFile, exitCode: 0 },
-        {
-          evalSet: [{ query: "never", should_trigger: true }],
-          signal: controller.signal,
-        },
-      )
+      await pending
     } catch (error) {
       caught = error
     }
     expect(isAbortError(caught)).toBe(true)
-    expect(existsSync(markerFile)).toBe(false)
+    expect(existsSync(startLog)).toBe(false)
   } finally {
+    controller.abort()
+    try {
+      await pending
+    } catch {
+      /* expected */
+    }
     harness.cleanup()
   }
 })
 
 test("runEval escalates to SIGKILL for an abort-ignoring child within the grace period", async () => {
   const harness = makeEvalHarness()
-  const markerFile = join(harness.root, "child.pid")
+  const startLog = join(harness.root, "starts.log")
   const controller = new AbortController()
+  let pending: Promise<unknown> | undefined
   try {
-    const pending = runEvalWithScenario(
+    pending = runEvalWithScenario(
       harness,
-      { lines: [], sleepMs: 30_000, ignoreSigterm: true, markerFile, exitCode: 0 },
+      { lines: [], sleepMs: 30_000, ignoreSigterm: true, startLog, exitCode: 0 },
       {
         evalSet: [{ query: "stubborn", should_trigger: true }],
         numWorkers: 1,
@@ -795,10 +875,10 @@ test("runEval escalates to SIGKILL for an abort-ignoring child within the grace 
     )
 
     const deadline = Date.now() + 5_000
-    while (!existsSync(markerFile) && Date.now() < deadline) {
+    while (!existsSync(startLog) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
-    const childPid = Number(readFileSync(markerFile, "utf-8"))
+    const first = JSON.parse(readFileSync(startLog, "utf-8").trim().split("\n")[0])
 
     const startedAt = Date.now()
     controller.abort()
@@ -816,7 +896,7 @@ test("runEval escalates to SIGKILL for an abort-ignoring child within the grace 
 
     const alive = (() => {
       try {
-        process.kill(childPid, 0)
+        process.kill(first.pid, 0)
         return true
       } catch {
         return false
@@ -824,15 +904,24 @@ test("runEval escalates to SIGKILL for an abort-ignoring child within the grace 
     })()
     expect(alive).toBe(false)
   } finally {
+    controller.abort()
+    try {
+      await pending
+    } catch {
+      /* expected */
+    }
     harness.cleanup()
   }
 })
 
 // ---------------------------------------------------------------------------
-// LD2-3: the documented effective-config mechanism is real. `opencode debug
-// config` lists the ordered source documents for a project, so a test can prove
-// that the direct root config is an effective document (not a blind copy).
-// Skips cleanly when the OpenCode CLI is absent; offline, no model.
+// LD2-3: effective V2 config through the real runtime, not a document list.
+// A synthetic eval root is built by mirroring the ORIGINAL project (a root
+// `opencode.jsonc` plus a root-relative instructions file), then the real
+// OpenCode CLI is run from that eval root. `--agent <root-agent>` resolves only
+// if the mirrored root config is actually effective (an unknown id exits with
+// "Agent not found"), and the eval-root child reads the mirrored instruction
+// file and reports its CONTENT. Offline, no model; skips without the CLI.
 // ---------------------------------------------------------------------------
 
 function resolveOpencodeCli(): string | null {
@@ -844,49 +933,72 @@ function resolveOpencodeCli(): string | null {
 }
 
 test(
-  "opencode debug config lists the direct root config as an effective document",
+  "the mirrored eval root is effective: a root-config agent resolves and its relative instruction content is present",
   { skip: resolveOpencodeCli() ? false : "opencode CLI not installed" },
   () => {
-    const root = mkdtempSync(join(tmpdir(), "skc-config-probe-"))
+    const root = mkdtempSync(join(tmpdir(), "skc-effective-probe-"))
     const project = join(root, "project")
+    const evalRoot = join(root, "evalroot")
     mkdirSync(join(project, ".opencode"), { recursive: true })
-    writeFileSync(join(project, "local-rules.md"), "rules\n")
+    mkdirSync(evalRoot, { recursive: true })
+    writeFileSync(join(project, "local-rules.md"), "EFFECTIVE_INSTRUCTION_CONTENT\n")
     writeFileSync(
       join(project, "opencode.jsonc"),
-      JSON.stringify({ instructions: ["./local-rules.md"], providers: { probe: { name: "Probe" } } }),
+      JSON.stringify({
+        instructions: ["./local-rules.md"],
+        agent: { "root-probe-agent": { description: "ROOT_AGENT_DESC", mode: "primary" } },
+      }),
     )
-    writeFileSync(join(project, ".opencode", "opencode.json"), JSON.stringify({}))
 
-    const env = {
-      PATH: process.env.PATH ?? "",
-      HOME: join(root, "home"),
-      XDG_CONFIG_HOME: join(root, "config"),
-      XDG_DATA_HOME: join(root, "data"),
-      XDG_CACHE_HOME: join(root, "cache"),
-      XDG_STATE_HOME: join(root, "state"),
-    }
-    for (const key of ["home", "config", "data", "cache", "state"]) {
-      mkdirSync(join(root, key), { recursive: true })
-    }
+    const run = (args) =>
+      execFileSync(resolveOpencodeCli()!, args, {
+        cwd: evalRoot,
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: join(root, "home"),
+          XDG_CONFIG_HOME: join(root, "config"),
+          XDG_DATA_HOME: join(root, "data"),
+          XDG_CACHE_HOME: join(root, "cache"),
+          XDG_STATE_HOME: join(root, "state"),
+          // Pin PWD to the eval root exactly as runSingleQuery does.
+          PWD: evalRoot,
+        },
+        encoding: "utf-8",
+        timeout: 60_000,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
 
     try {
-      const output = execFileSync(
-        resolveOpencodeCli()!,
-        ["api", "--standalone", "GET", "/api/config"],
-        { cwd: project, env, encoding: "utf-8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] },
-      )
-      const sources = JSON.parse(output)
-      const documents = sources.filter((entry) => entry.type === "document").map((entry) => entry.path)
-      // Both the direct root document and the .opencode document are effective.
-      expect(documents.some((path) => path.endsWith("opencode.jsonc"))).toBe(true)
-      expect(documents.some((path) => path.endsWith(".opencode/opencode.json"))).toBe(true)
+      let beforeError = ""
+      try {
+        run(["run", "--standalone", "--agent", "root-probe-agent", "-m", "nonexistent/model", "ping"])
+      } catch (error) {
+        beforeError = String(error.stderr ?? error.message ?? error)
+      }
+      // Before mirroring, the eval root has no root config, so the agent is unknown.
+      if (!/Agent not found/.test(beforeError) || /Model unavailable/.test(beforeError)) {
+        throw new Error(`precondition failed: expected "Agent not found", got: ${beforeError.slice(0, 300)}`)
+      }
 
-      const rootDocument = sources.find(
-        (entry) => entry.type === "document" && entry.path.endsWith("opencode.jsonc"),
-      )
-      // The relative instruction is recorded as configured (proving the root
-      // document is effective); it stays resolvable from the mirrored sibling.
-      expect(rootDocument.info.instructions).toContain("./local-rules.md")
+      // Build the eval root exactly as runSingleQuery does.
+      symlinkProjectOpenCodeConfig(project, evalRoot, "tested-skill")
+
+      let afterError = ""
+      try {
+        run(["run", "--standalone", "--agent", "root-probe-agent", "-m", "nonexistent/model", "ping"])
+      } catch (error) {
+        afterError = String(error.stderr ?? error.message ?? error)
+      }
+      // The root-config agent now resolves (the next failure is the bogus model),
+      // proving the mirrored root config is effective in the eval root.
+      expect(/Model unavailable/.test(afterError)).toBe(true)
+      expect(/Agent not found/.test(afterError)).toBe(false)
+
+      // The mirrored relative instruction file content is present (not just a path).
+      expect(existsSync(join(evalRoot, "local-rules.md"))).toBe(true)
+      expect(readFileSync(join(evalRoot, "local-rules.md"), "utf-8")).toBe("EFFECTIVE_INSTRUCTION_CONTENT\n")
+      // The config document itself is present at the same relative position.
+      expect(existsSync(join(evalRoot, "opencode.jsonc"))).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

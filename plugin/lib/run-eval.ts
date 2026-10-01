@@ -13,6 +13,7 @@
 import {
   cpSync,
   existsSync,
+  globSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -22,7 +23,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "fs"
-import { dirname, join, parse } from "path"
+import { dirname, isAbsolute, join, parse, relative, resolve } from "path"
 import { randomBytes } from "crypto"
 import { tmpdir as osTmpdir } from "os"
 import { parse as parseJsonc } from "jsonc-parser"
@@ -290,24 +291,32 @@ export function findProjectRoot(cwd?: string): string {
  * no copy), passing an explicit type so directory links resolve correctly. On
  * platforms where symlinks are unavailable — Windows without admin/Developer
  * Mode rejects them with EPERM — fall back to a recursive copy so eval
- * isolation still works cross-platform.
+ * isolation still works cross-platform. Idempotent: an existing target is left
+ * untouched, so overlapping mirrors never collide with EEXIST.
  */
 function linkOrCopyConfigEntry(source: string, target: string, isDirectory: boolean): void {
+  if (existsSync(target)) return
+  mkdirSync(dirname(target), { recursive: true })
   try {
     symlinkSync(source, target, isDirectory ? "dir" : "file")
   } catch {
-    cpSync(source, target, { recursive: true })
+    if (!existsSync(target)) cpSync(source, target, { recursive: true })
   }
 }
 
+/** True when `child` is strictly inside `parent` (no partial-name matches). */
+function isInsidePath(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
+}
+
 /**
- * Collect the local files a root config document references via a relative path
- * (`instructions` entries and `{file:...}` substitutions). They are mirrored as
- * siblings so those references keep resolving from the eval root: OpenCode
- * resolves such paths relative to the config document's directory, which the
- * mirror preserves.
+ * Collect the local paths a root config document references (`instructions`
+ * entries and `{file:...}` substitutions). Returns each entry unchanged so the
+ * caller can distinguish literal paths from glob patterns; absolute paths,
+ * URLs, and `~`-prefixed paths are never local to the project and are skipped.
  */
-function collectRelativeConfigFiles(projectRoot: string, configFileName: string): string[] {
+function collectRelativeConfigRefs(projectRoot: string, configFileName: string): string[] {
   const text = readFileSync(join(projectRoot, configFileName), "utf-8")
   const data = parseJsonc(text) as Record<string, unknown> | undefined
   if (!data || typeof data !== "object") return []
@@ -316,7 +325,6 @@ function collectRelativeConfigFiles(projectRoot: string, configFileName: string)
   const pushLocal = (value: unknown) => {
     if (typeof value !== "string" || !value) return
     if (value.startsWith("/") || value.startsWith("~") || value.includes("://")) return
-    if (/[*?[\]{}]/.test(value)) return
     referenced.push(value)
   }
 
@@ -339,6 +347,45 @@ function collectRelativeConfigFiles(projectRoot: string, configFileName: string)
 }
 
 /**
+ * Expand one instruction/reference entry into concrete project-relative files.
+ * Glob patterns are expanded with `fs.globSync` (stdlib, no new dependency in
+ * the supported Node/Bun runtime); literal paths are used as-is. Paths that
+ * resolve outside the project root are reported and skipped rather than
+ * silently dropped.
+ */
+function expandConfigReference(projectRoot: string, reference: string): string[] {
+  const hasGlob = /[*?[\]{}]/.test(reference)
+  let matches: string[]
+  if (hasGlob) {
+    try {
+      matches = globSync(reference, { cwd: projectRoot })
+    } catch (error) {
+      console.error(
+        `skill_eval: could not expand instruction pattern "${reference}" for the isolated eval root: ${String(error)}`,
+      )
+      return []
+    }
+  } else {
+    matches = [reference]
+  }
+
+  const resolved: string[] = []
+  for (const match of matches) {
+    const absolute = resolve(projectRoot, match)
+    if (!isInsidePath(projectRoot, absolute)) {
+      // e.g. `../shared/rules.md` — cannot be mirrored as a sibling without
+      // escaping the eval root. Surface it instead of silently losing it.
+      console.error(
+        `skill_eval: instruction reference "${reference}" resolves outside the project root and is not mirrored into the isolated eval root; move it inside the project if eval runs must see it.`,
+      )
+      continue
+    }
+    if (existsSync(absolute)) resolved.push(absolute)
+  }
+  return resolved
+}
+
+/**
  * Mirror a project's direct root config documents into the eval root and carry
  * across any relative `instructions`/`{file:...}` files they reference.
  *
@@ -346,27 +393,34 @@ function collectRelativeConfigFiles(projectRoot: string, configFileName: string)
  * document, so copying the document into the eval root is only correct if the
  * referenced siblings come with it; otherwise the paths silently re-point at
  * files that do not exist there and the instructions are lost.
+ *
+ * Safety: the skill under test, and anything under `.opencode/skills`, is never
+ * mirrored — a reference into that directory cannot be allowed to reintroduce
+ * the real skill into the isolated root.
  */
-function mirrorRootConfigDocuments(projectRoot: string, evalRoot: string): void {
-  const referenced = new Set<string>()
+function mirrorRootConfigDocuments(
+  projectRoot: string,
+  evalRoot: string,
+  skillName: string,
+): void {
+  const skillsRoot = join(projectRoot, ".opencode", "skills")
+
   for (const name of ROOT_CONFIG_FILES) {
     const source = join(projectRoot, name)
     if (!existsSync(source)) continue
     linkOrCopyConfigEntry(source, join(evalRoot, name), false)
-    for (const relative of collectRelativeConfigFiles(projectRoot, name)) {
-      referenced.add(relative)
-    }
-  }
 
-  for (const relative of referenced) {
-    const source = join(projectRoot, relative)
-    if (source === projectRoot || !source.startsWith(projectRoot + "/")) continue
-    if (!existsSync(source)) continue
-    const target = join(evalRoot, relative)
-    if (!target.startsWith(evalRoot + "/")) continue
-    if (existsSync(target)) continue
-    mkdirSync(dirname(target), { recursive: true })
-    linkOrCopyConfigEntry(source, target, statSync(source).isDirectory())
+    for (const reference of collectRelativeConfigRefs(projectRoot, name)) {
+      for (const absolute of expandConfigReference(projectRoot, reference)) {
+        // Never reintroduce the tested skill or anything under the project's
+        // skills directory into the isolated eval root.
+        if (absolute === skillsRoot || isInsidePath(skillsRoot, absolute)) continue
+        const relativeTarget = relative(projectRoot, absolute)
+        const target = join(evalRoot, relativeTarget)
+        if (!isInsidePath(evalRoot, target)) continue
+        linkOrCopyConfigEntry(absolute, target, statSync(absolute).isDirectory())
+      }
+    }
   }
 }
 
@@ -375,42 +429,44 @@ export function symlinkProjectOpenCodeConfig(
   evalRoot: string,
   skillName: string,
 ): void {
-  // Mirror the project's *direct root* config documents (and the relative
-  // files they reference) first. OpenCode resolves `instructions` (and
-  // `{file:...}` references) relative to the directory of the config document,
-  // so a root `opencode.jsonc` that lives at `projectRoot` is ineffective when
-  // only its `.opencode/` folder is mirrored: the document itself would be
-  // absent and its relative paths would have no base in the eval root.
-  mirrorRootConfigDocuments(projectRoot, evalRoot)
-
+  // Mirror the project's `.opencode/` config first (excluding skills), then the
+  // direct root config documents and their referenced files. Runs in this order
+  // so root references that point into `.opencode/` are idempotent no-ops
+  // rather than collisions.
   const sourceOpenCode = join(projectRoot, ".opencode")
-  if (!existsSync(sourceOpenCode)) return
+  if (existsSync(sourceOpenCode)) {
+    const targetOpenCode = join(evalRoot, ".opencode")
+    mkdirSync(targetOpenCode, { recursive: true })
 
-  const targetOpenCode = join(evalRoot, ".opencode")
-  mkdirSync(targetOpenCode, { recursive: true })
+    for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
+      if (entry.name === "skills") continue
+      linkOrCopyConfigEntry(
+        join(sourceOpenCode, entry.name),
+        join(targetOpenCode, entry.name),
+        entry.isDirectory(),
+      )
+    }
 
-  for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
-    if (entry.name === "skills") continue
-    linkOrCopyConfigEntry(
-      join(sourceOpenCode, entry.name),
-      join(targetOpenCode, entry.name),
-      entry.isDirectory(),
-    )
+    const sourceSkills = join(sourceOpenCode, "skills")
+    if (existsSync(sourceSkills)) {
+      const targetSkills = join(targetOpenCode, "skills")
+      mkdirSync(targetSkills, { recursive: true })
+      for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
+        if (entry.name === skillName) continue
+        linkOrCopyConfigEntry(
+          join(sourceSkills, entry.name),
+          join(targetSkills, entry.name),
+          entry.isDirectory(),
+        )
+      }
+    }
   }
 
-  const sourceSkills = join(sourceOpenCode, "skills")
-  if (!existsSync(sourceSkills)) return
-
-  const targetSkills = join(targetOpenCode, "skills")
-  mkdirSync(targetSkills, { recursive: true })
-  for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
-    if (entry.name === skillName) continue
-    linkOrCopyConfigEntry(
-      join(sourceSkills, entry.name),
-      join(targetSkills, entry.name),
-      entry.isDirectory(),
-    )
-  }
+  // Root config documents (and the relative files they reference) are mirrored
+  // at the same relative position. OpenCode resolves `instructions` and
+  // `{file:...}` references relative to the config document's directory, so the
+  // document is only effective if its relative siblings come across too.
+  mirrorRootConfigDocuments(projectRoot, evalRoot, skillName)
 }
 
 /**

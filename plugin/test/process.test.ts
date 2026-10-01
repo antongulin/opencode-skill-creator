@@ -1,6 +1,18 @@
 import { expect, test } from "bun:test"
+import { existsSync, mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { isFailedExitCode, isFailedProcess, runProcess } from "../lib/process"
+
+/** Poll for a readiness file the child writes after it has started. */
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!existsSync(path) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  if (!existsSync(path)) throw new Error(`ready marker not written: ${path}`)
+}
 
 test("isFailedExitCode treats only defined non-zero exit codes as failures", () => {
   expect(isFailedExitCode(1)).toBe(true)
@@ -107,14 +119,25 @@ test("runProcess can stop early from stdout parsing without timing out", async (
 
 test("runProcess kills the child and reports aborted when the signal aborts", async () => {
   const controller = new AbortController()
+  const ready = join(mkdtempSync(join(tmpdir(), "osc-abort-ready-")), "ready")
   const startedAt = Date.now()
   const pending = runProcess(
-    ["node", "-e", "setTimeout(() => undefined, 30_000)"],
-    { timeoutMs: 60_000, signal: controller.signal },
+    [
+      "node",
+      "-e",
+      `require("fs").writeFileSync(process.env.SKC_READY, "1"); setTimeout(() => undefined, 30_000)`,
+    ],
+    {
+      timeoutMs: 60_000,
+      signal: controller.signal,
+      env: { ...process.env, SKC_READY: ready },
+    },
   )
 
-  // Abort after the child has had a chance to spawn.
-  setTimeout(() => controller.abort(), 150)
+  // Deterministic readiness instead of an arbitrary delay: abort only once the
+  // child has actually spawned and signalled it is running.
+  await waitForFile(ready)
+  controller.abort()
 
   const result = await pending
 
@@ -126,17 +149,27 @@ test("runProcess kills the child and reports aborted when the signal aborts", as
 
 test("runProcess force-kills an abort-ignoring child after the grace period", async () => {
   const controller = new AbortController()
+  const ready = join(mkdtempSync(join(tmpdir(), "osc-kill-ready-")), "ready")
   const startedAt = Date.now()
   const pending = runProcess(
     [
       "node",
       "-e",
-      "process.on('SIGTERM', () => {}); setTimeout(() => undefined, 30_000)",
+      // The SIGTERM handler is installed BEFORE the ready marker, so once the
+      // marker exists the abort's SIGTERM is guaranteed to be ignored and the
+      // SIGKILL escalation is what actually ends the child.
+      `process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.env.SKC_READY, "1"); setTimeout(() => undefined, 30_000)`,
     ],
-    { timeoutMs: 60_000, killGraceMs: 50, signal: controller.signal },
+    {
+      timeoutMs: 60_000,
+      killGraceMs: 50,
+      signal: controller.signal,
+      env: { ...process.env, SKC_READY: ready },
+    },
   )
 
-  setTimeout(() => controller.abort(), 100)
+  await waitForFile(ready)
+  controller.abort()
 
   const result = await pending
 

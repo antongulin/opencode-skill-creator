@@ -1,7 +1,7 @@
 // @bun
 // skill-creator.ts
 import { tool } from "@opencode-ai/plugin";
-import { join as join10, dirname as dirname3, isAbsolute, relative as relative2, sep } from "path";
+import { join as join10, dirname as dirname3, isAbsolute as isAbsolute2, relative as relative3, sep } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, rmSync as rmSync3, writeFileSync as writeFileSync8 } from "fs";
@@ -193,6 +193,7 @@ function parseSkillMd(skillPath) {
 import {
   cpSync,
   existsSync as existsSync2,
+  globSync,
   mkdirSync,
   mkdtempSync,
   readFileSync as readFileSync3,
@@ -202,7 +203,7 @@ import {
   symlinkSync,
   writeFileSync
 } from "fs";
-import { dirname, join as join3, parse as parse3 } from "path";
+import { dirname, isAbsolute, join as join3, parse as parse3, relative, resolve } from "path";
 import { randomBytes } from "crypto";
 import { tmpdir as osTmpdir } from "os";
 
@@ -1241,13 +1242,21 @@ function findProjectRoot(cwd) {
   return cwd ?? process.cwd();
 }
 function linkOrCopyConfigEntry(source, target, isDirectory) {
+  if (existsSync2(target))
+    return;
+  mkdirSync(dirname(target), { recursive: true });
   try {
     symlinkSync(source, target, isDirectory ? "dir" : "file");
   } catch {
-    cpSync(source, target, { recursive: true });
+    if (!existsSync2(target))
+      cpSync(source, target, { recursive: true });
   }
 }
-function collectRelativeConfigFiles(projectRoot, configFileName) {
+function isInsidePath(parent, child) {
+  const rel = relative(parent, child);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+function collectRelativeConfigRefs(projectRoot, configFileName) {
   const text = readFileSync3(join3(projectRoot, configFileName), "utf-8");
   const data = parse2(text);
   if (!data || typeof data !== "object")
@@ -1257,8 +1266,6 @@ function collectRelativeConfigFiles(projectRoot, configFileName) {
     if (typeof value !== "string" || !value)
       return;
     if (value.startsWith("/") || value.startsWith("~") || value.includes("://"))
-      return;
-    if (/[*?[\]{}]/.test(value))
       return;
     referenced.push(value);
   };
@@ -1280,54 +1287,73 @@ function collectRelativeConfigFiles(projectRoot, configFileName) {
   fromFiles(data);
   return referenced;
 }
-function mirrorRootConfigDocuments(projectRoot, evalRoot) {
-  const referenced = new Set;
+function expandConfigReference(projectRoot, reference) {
+  const hasGlob = /[*?[\]{}]/.test(reference);
+  let matches;
+  if (hasGlob) {
+    try {
+      matches = globSync(reference, { cwd: projectRoot });
+    } catch (error) {
+      console.error(`skill_eval: could not expand instruction pattern "${reference}" for the isolated eval root: ${String(error)}`);
+      return [];
+    }
+  } else {
+    matches = [reference];
+  }
+  const resolved = [];
+  for (const match of matches) {
+    const absolute = resolve(projectRoot, match);
+    if (!isInsidePath(projectRoot, absolute)) {
+      console.error(`skill_eval: instruction reference "${reference}" resolves outside the project root and is not mirrored into the isolated eval root; move it inside the project if eval runs must see it.`);
+      continue;
+    }
+    if (existsSync2(absolute))
+      resolved.push(absolute);
+  }
+  return resolved;
+}
+function mirrorRootConfigDocuments(projectRoot, evalRoot, skillName) {
+  const skillsRoot = join3(projectRoot, ".opencode", "skills");
   for (const name of ROOT_CONFIG_FILES) {
     const source = join3(projectRoot, name);
     if (!existsSync2(source))
       continue;
     linkOrCopyConfigEntry(source, join3(evalRoot, name), false);
-    for (const relative of collectRelativeConfigFiles(projectRoot, name)) {
-      referenced.add(relative);
+    for (const reference of collectRelativeConfigRefs(projectRoot, name)) {
+      for (const absolute of expandConfigReference(projectRoot, reference)) {
+        if (absolute === skillsRoot || isInsidePath(skillsRoot, absolute))
+          continue;
+        const relativeTarget = relative(projectRoot, absolute);
+        const target = join3(evalRoot, relativeTarget);
+        if (!isInsidePath(evalRoot, target))
+          continue;
+        linkOrCopyConfigEntry(absolute, target, statSync(absolute).isDirectory());
+      }
     }
-  }
-  for (const relative of referenced) {
-    const source = join3(projectRoot, relative);
-    if (source === projectRoot || !source.startsWith(projectRoot + "/"))
-      continue;
-    if (!existsSync2(source))
-      continue;
-    const target = join3(evalRoot, relative);
-    if (!target.startsWith(evalRoot + "/"))
-      continue;
-    if (existsSync2(target))
-      continue;
-    mkdirSync(dirname(target), { recursive: true });
-    linkOrCopyConfigEntry(source, target, statSync(source).isDirectory());
   }
 }
 function symlinkProjectOpenCodeConfig(projectRoot, evalRoot, skillName) {
-  mirrorRootConfigDocuments(projectRoot, evalRoot);
   const sourceOpenCode = join3(projectRoot, ".opencode");
-  if (!existsSync2(sourceOpenCode))
-    return;
-  const targetOpenCode = join3(evalRoot, ".opencode");
-  mkdirSync(targetOpenCode, { recursive: true });
-  for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
-    if (entry.name === "skills")
-      continue;
-    linkOrCopyConfigEntry(join3(sourceOpenCode, entry.name), join3(targetOpenCode, entry.name), entry.isDirectory());
+  if (existsSync2(sourceOpenCode)) {
+    const targetOpenCode = join3(evalRoot, ".opencode");
+    mkdirSync(targetOpenCode, { recursive: true });
+    for (const entry of readdirSync(sourceOpenCode, { withFileTypes: true })) {
+      if (entry.name === "skills")
+        continue;
+      linkOrCopyConfigEntry(join3(sourceOpenCode, entry.name), join3(targetOpenCode, entry.name), entry.isDirectory());
+    }
+    const sourceSkills = join3(sourceOpenCode, "skills");
+    if (existsSync2(sourceSkills)) {
+      const targetSkills = join3(targetOpenCode, "skills");
+      mkdirSync(targetSkills, { recursive: true });
+      for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
+        if (entry.name === skillName)
+          continue;
+        linkOrCopyConfigEntry(join3(sourceSkills, entry.name), join3(targetSkills, entry.name), entry.isDirectory());
+      }
+    }
   }
-  const sourceSkills = join3(sourceOpenCode, "skills");
-  if (!existsSync2(sourceSkills))
-    return;
-  const targetSkills = join3(targetOpenCode, "skills");
-  mkdirSync(targetSkills, { recursive: true });
-  for (const entry of readdirSync(sourceSkills, { withFileTypes: true })) {
-    if (entry.name === skillName)
-      continue;
-    linkOrCopyConfigEntry(join3(sourceSkills, entry.name), join3(targetSkills, entry.name), entry.isDirectory());
-  }
+  mirrorRootConfigDocuments(projectRoot, evalRoot, skillName);
 }
 async function runSingleQuery(query, skillName, skillDescription, timeout, projectRoot, agent, triggerOnly, model, signal) {
   if (!SKILL_NAME_RE.test(skillName)) {
@@ -2654,7 +2680,7 @@ import {
   writeFileSync as writeFileSync5
 } from "fs";
 import { createServer } from "http";
-import { basename as basename2, extname, join as join6, relative } from "path";
+import { basename as basename2, extname, join as join6, relative as relative2 } from "path";
 var METADATA_FILES = new Set(["transcript.md", "user_notes.md", "metrics.json"]);
 var TEXT_EXTENSIONS = new Set([
   ".txt",
@@ -2823,7 +2849,7 @@ function buildRun(root, runDir) {
   }
   if (!prompt)
     prompt = "(No prompt found)";
-  const runId = relative(root, runDir).replace(/[/\\]/g, "-");
+  const runId = relative2(root, runDir).replace(/[/\\]/g, "-");
   const outputsDir = join6(runDir, "outputs");
   const outputFiles = [];
   if (existsSync4(outputsDir) && statSync3(outputsDir).isDirectory()) {
@@ -3558,9 +3584,9 @@ function writeAutoUpdateStatus(path, status) {
 `, "utf-8");
   } catch {}
 }
-function isInsidePath(parent, child, pathModule = {
-  isAbsolute,
-  relative: relative2,
+function isInsidePath2(parent, child, pathModule = {
+  isAbsolute: isAbsolute2,
+  relative: relative3,
   sep
 }) {
   const rel = pathModule.relative(parent, child);
@@ -3612,7 +3638,7 @@ async function maybeAutoRefreshPluginCache(options = {}) {
         return { checked: true, cleared: false, reason: "missing-cache" };
       }
       const currentPluginDir = options.currentPluginDir ?? PLUGIN_DIR;
-      if (isInsidePath(paths.packageCacheRoot, currentPluginDir)) {
+      if (isInsidePath2(paths.packageCacheRoot, currentPluginDir)) {
         (options.scheduleClearImpl ?? scheduleCacheClear)(paths.packageCacheRoot);
         return { checked: true, cleared: false, reason: "scheduled-clear" };
       }
