@@ -104,6 +104,17 @@ When the user requests a durable behavior change, record it here or in the relev
   temp dirs, browser pages). A worker that opened a browser page closes it before
   finishing; the lead verifies.
 
+### Review servers are owned per plugin instance and released on unload
+
+- Review servers are owned by one plugin instance (`PluginInstance.servers`), never a
+  process-global map: one instance's cleanup must never close another instance's servers.
+- Both entrypoints release their own instance's servers when OpenCode unloads the
+  plugin: V1 `server()` returns hooks with `dispose()` (OpenCode ≥ 1.18.29 calls it on
+  registry unload), and V2 `setup()` keeps its existing returned cleanup closure.
+- The V1 `dispose` is idempotent (clear the owned map before the best-effort stops) and
+  must not add process-global `SIGINT`/`exit` listeners or steal another process's port;
+  a busy port still fails loudly.
+
 ### Credit adopted contributor work in release notes
 
 - When an external contributor's code, tests, or design is adopted — reworked or

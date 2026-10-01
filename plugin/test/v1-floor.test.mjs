@@ -128,6 +128,7 @@ test("built artifact runs real tool behavior on the promised Node floor (>= 18)"
   const fixtureSkill = join(iso, "fixture-skill")
   const crlfFixtureSkill = join(iso, "crlf-fixture-skill")
   const crlfInvalidFixtureSkill = join(iso, "crlf-invalid-fixture-skill")
+  const reviewWorkspace = join(iso, "review-workspace")
   const markerPath = join(iso, "marker.json")
   try {
     mkdirSync(consumerDir, { recursive: true })
@@ -135,6 +136,12 @@ test("built artifact runs real tool behavior on the promised Node floor (>= 18)"
     mkdirSync(fixtureSkill, { recursive: true })
     mkdirSync(crlfFixtureSkill, { recursive: true })
     mkdirSync(crlfInvalidFixtureSkill, { recursive: true })
+    mkdirSync(join(reviewWorkspace, "eval-0", "with_skill", "outputs"), { recursive: true })
+    writeFileSync(
+      join(reviewWorkspace, "eval-0", "eval_metadata.json"),
+      `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
+    )
+    writeFileSync(join(reviewWorkspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
     writeFileSync(
       join(fixtureSkill, "SKILL.md"),
       ["---", "name: floor-fixture", "description: A fixture skill parsed by the floor Node.", "---", "", "# Floor fixture", ""].join("\n"),
@@ -180,13 +187,15 @@ test("built artifact runs real tool behavior on the promised Node floor (>= 18)"
       join(consumerDir, "floor-behavior.mjs"),
       `
 import { mkdirSync, writeFileSync } from "node:fs"
+import { createServer } from "node:net"
 import def from "opencode-skill-creator"
 
 const markerPath = ${JSON.stringify(markerPath)}
 const fixtureSkill = ${JSON.stringify(fixtureSkill)}
 const crlfFixtureSkill = ${JSON.stringify(crlfFixtureSkill)}
 const crlfInvalidFixtureSkill = ${JSON.stringify(crlfInvalidFixtureSkill)}
-const marker = { steps: [], parse: null, validate: null, crlfValidate: null, crlfInvalidValidate: null, error: null }
+const reviewWorkspace = ${JSON.stringify(reviewWorkspace)}
+const marker = { steps: [], parse: null, validate: null, crlfValidate: null, crlfInvalidValidate: null, v1HooksDispose: null, v1Http200: null, v1PortRebindable: null, error: null }
 try {
   const added = []
   const ctx = {
@@ -219,10 +228,34 @@ try {
 
   marker.steps.push("setup", "parse", "validate")
   if (cleanup) await cleanup()
+
+  // 3. V1 dispose on the real floor: the V1 hooks expose dispose, and a review
+  //    server this instance started releases its port after dispose (real
+  //    sockets, not a registration-only claim). The V1 floor binary loads the
+  //    object entrypoint via server().
+  const hooks = await def.server({})
+  marker.v1HooksDispose = typeof hooks.dispose === "function"
+  const started = JSON.parse(await hooks.tool.skill_serve_review.execute({
+    workspace: reviewWorkspace, port: 0, allowPartial: true, openBrowser: false,
+  }))
+  const port = Number(new URL(started.url).port)
+  // The listener binds 127.0.0.1; fetch the literal address because Node 18's
+  // fetch does not fall back from a ::1 localhost resolution here.
+  marker.v1Http200 = (await fetch("http://127.0.0.1:" + port + "/")).status === 200
+  await hooks.dispose()
+  marker.v1PortRebindable = await new Promise((resolve) => {
+    const probe = createServer()
+    probe.once("error", () => resolve(false))
+    probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)))
+  })
 } catch (error) {
   marker.error = String(error && error.stack ? error.stack : error)
 } finally {
   writeFileSync(markerPath, JSON.stringify(marker))
+  // The real TCP listener + fetch keep-alive sockets can hold the event loop
+  // open on the Node 18 floor. The marker is written synchronously, so exit
+  // explicitly rather than waiting on a socket the test does not own.
+  process.exit(0)
 }
 `,
     )
@@ -264,6 +297,11 @@ try {
       "setup() registered the tools on the floor Node",
     )
     assert.deepEqual(marker.steps, ["setup", "parse", "validate"])
+    // V1 dispose works on the real Node 18 floor: the hooks expose dispose and
+    // a started review server's port is released afterwards.
+    assert.equal(marker.v1HooksDispose, true, "V1 server() hooks expose dispose on the Node floor")
+    assert.equal(marker.v1Http200, true, "V1 review server served HTTP 200 on the Node floor")
+    assert.equal(marker.v1PortRebindable, true, "V1 dispose releases the review port on the Node floor")
   } finally {
     rmSync(iso, { recursive: true, force: true })
   }

@@ -4192,7 +4192,20 @@ function buildPluginTools(instance) {
 }
 var SkillCreatorPlugin = async () => {
   await initialize();
-  return buildPluginTools(createPluginInstance());
+  const instance = createPluginInstance();
+  const hooks = buildPluginTools(instance);
+  return {
+    ...hooks,
+    async dispose() {
+      const servers = [...instance.servers.values()];
+      instance.servers.clear();
+      await Promise.all(servers.map(async (server) => {
+        try {
+          await server.stop();
+        } catch {}
+      }));
+    }
+  };
 };
 var v2Plugin = {
   id: "opencode-skill-creator",

@@ -23,6 +23,11 @@ Older V1 releases (before 1.18.29) only accept a function default export, which 
 no longer provides. If you must support them, pin the older `0.2.x` line — the last releases
 that accepted the function default export. The `0.3.x` line requires the `>= 1.18.29` floor.
 
+On the supported V1 floor, `server()` also returns a `dispose()` hook. OpenCode calls it when
+the plugin is unloaded, so review servers started through `skill_serve_review` release their
+ports instead of leaking them across a reload; V2 gets the same guarantee from the cleanup
+closure `setup()` returns. Both release only the servers the instance started.
+
 ### Supported V1 setup (manual)
 
 The installer does not configure V1. To use the supported V1 floor (>= 1.18.29), register the

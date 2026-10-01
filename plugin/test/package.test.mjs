@@ -538,6 +538,134 @@ test("V2 setup cleanup stops active review servers", async () => {
   }
 })
 
+// ---------------------------------------------------------------------------
+// P41-01: the V1 `server()` hooks must expose a `dispose` that releases ONLY its
+// own instance's review ports on unload. Before this change V1 returned `{ tool }`
+// with no dispose, so a review server started through skill_serve_review kept its
+// TCP port bound after the hooks were dropped — a reloaded plugin could fail to
+// rebind (EADDRINUSE). This drives the built bundle's real HTTP listener and real
+// sockets; no mocked stop counters. The independent instance B proves dispose is
+// per-instance, and the repeated dispose proves the map is cleared before the
+// owned stops (idempotent).
+// ---------------------------------------------------------------------------
+
+/** Create a minimal comparison workspace the review server accepts. */
+function writeReviewWorkspace(workspace) {
+  mkdirSync(join(workspace, "eval-0", "with_skill", "outputs"), { recursive: true })
+  writeFileSync(
+    join(workspace, "eval-0", "eval_metadata.json"),
+    `${JSON.stringify({ eval_id: 0, prompt: "Review" })}\n`,
+  )
+  writeFileSync(join(workspace, "eval-0", "with_skill", "outputs", "result.txt"), "ok\n")
+}
+
+/** True when an independent listener can bind the numeric port (no EADDRINUSE). */
+function canBindPort(port) {
+  return new Promise((resolve) => {
+    const probe = createServer()
+    probe.once("error", () => resolve(false))
+    probe.listen(port, "127.0.0.1", () => {
+      probe.close(() => resolve(true))
+    })
+  })
+}
+
+test("V1 server() dispose closes only its own review servers and is idempotent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "osc-v1-dispose-"))
+  const workspaceA1 = join(root, "a1-workspace")
+  const workspaceA2 = join(root, "a2-workspace")
+  const workspaceB = join(root, "b-workspace")
+
+  let hooksA
+  let hooksB
+  try {
+    for (const ws of [workspaceA1, workspaceA2, workspaceB]) writeReviewWorkspace(ws)
+
+    const mod = await import(`${distEntryPath}?v1-dispose=${Date.now()}`)
+    // Two separate V1 `server()` calls -> two instances with independent maps.
+    hooksA = await withPrivateHome(() => mod.default.server({}))
+    hooksB = await withPrivateHome(() => mod.default.server({}))
+
+    // The V1 lifecycle contract: OpenCode (>= 1.18.29) calls `plugin.dispose()`
+    // on registry unload. buildPluginTools returns `{ tool }`, so dispose is
+    // added by the entrypoint.
+    assert.equal(typeof hooksA.dispose, "function", "V1 hooks expose dispose")
+    assert.equal(typeof hooksB.dispose, "function", "second V1 instance exposes dispose")
+
+    // Instance A owns TWO review servers in distinct workspaces.
+    const startA1 = JSON.parse(
+      await hooksA.tool.skill_serve_review.execute({
+        workspace: workspaceA1, port: 0, allowPartial: true, openBrowser: false,
+      }),
+    )
+    const startA2 = JSON.parse(
+      await hooksA.tool.skill_serve_review.execute({
+        workspace: workspaceA2, port: 0, allowPartial: true, openBrowser: false,
+      }),
+    )
+    // Instance B owns an independent server.
+    const startB = JSON.parse(
+      await hooksB.tool.skill_serve_review.execute({
+        workspace: workspaceB, port: 0, allowPartial: true, openBrowser: false,
+      }),
+    )
+    const portA1 = Number(new URL(startA1.url).port)
+    const portA2 = Number(new URL(startA2.url).port)
+    const portB = Number(new URL(startB.url).port)
+    assert.equal(new Set([portA1, portA2, portB]).size, 3, "three distinct ports")
+
+    // All three really serve over HTTP before disposal.
+    assert.equal((await fetch(startA1.url)).status, 200)
+    assert.equal((await fetch(startA2.url)).status, 200)
+    assert.equal((await fetch(startB.url)).status, 200)
+
+    // Disposing A closes BOTH of A's servers...
+    await hooksA.dispose()
+    await assert.rejects(fetch(startA1.url), "A's first server is closed after dispose")
+    await assert.rejects(fetch(startA2.url), "A's second server is closed after dispose")
+
+    // ...frees A's ports for an independent listener...
+    assert.equal(await canBindPort(portA1), true, "A's first port is rebindable")
+    assert.equal(await canBindPort(portA2), true, "A's second port is rebindable")
+
+    // ...and leaves the independent instance B serving (per-instance disposal).
+    assert.equal((await fetch(startB.url)).status, 200, "B's server survives A.dispose")
+
+    // Repeated dispose is a benign no-op and still leaves B alone.
+    await hooksA.dispose()
+    await hooksA.dispose()
+    assert.equal((await fetch(startB.url)).status, 200, "B still serving after repeated A.dispose")
+
+    // B's own dispose closes B and frees its port.
+    await hooksB.dispose()
+    await assert.rejects(fetch(startB.url), "B's server is closed by its own dispose")
+    assert.equal(await canBindPort(portB), true, "B's port is rebindable after B.dispose")
+  } finally {
+    // Never leak an owned server: the real stop-all tool closes anything still
+    // bound (needed when this test fails before dispose, e.g. the pre-fix run),
+    // then the hook is called again for good measure.
+    for (const [hooks, ws] of [
+      [hooksA, workspaceA1],
+      [hooksA, workspaceA2],
+      [hooksB, workspaceB],
+    ]) {
+      if (!hooks) continue
+      try {
+        await hooks.tool.skill_stop_review.execute({ workspace: ws })
+      } catch {
+        // Best-effort teardown only.
+      }
+    }
+    if (hooksA && typeof hooksA.dispose === "function") {
+      try { await hooksA.dispose() } catch { /* best-effort */ }
+    }
+    if (hooksB && typeof hooksB.dispose === "function") {
+      try { await hooksB.dispose() } catch { /* best-effort */ }
+    }
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("compiled entrypoint does not depend on Bun runtime APIs", () => {
   const source = readFileSync(distEntryPath, "utf-8")
 
