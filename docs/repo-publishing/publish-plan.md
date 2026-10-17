@@ -1,6 +1,6 @@
 # Documentation publication plan
 
-Prepared October 16, 2026. Status: local documentation draft awaiting diff acceptance. GitHub homepage and topics are saved and verified. Documentation commit/push verification remains pending; no npm release or website deployment is part of this batch.
+Completed October 16, 2026. The accepted documentation was published in [e6464cf](https://github.com/antongulin/opencode-skill-creator/commit/e6464cfb809b7dc0d12b9184789b2370b86f5356), with GitHub rendering and metadata readback verified. No npm release or website deployment was performed.
 
 ## Prepared scope
 
@@ -24,13 +24,14 @@ A fresh Astra audit reviewed the plan, repository behavior, release workflow, an
 
 The audit accepted the bounded SEO approach and documentation-only release boundary. It did not certify indexing, rankings, AI citations, or a complete independent website audit. The lead reviewed the final diff against these decisions.
 
-## Remaining gates
+## Completed publication checks
 
-1. Accept the exact documentation diff after checking local links/fragments, preserved anchors, npm absolute links, source/tool accuracy, privacy, and whitespace. No runtime change or new test suite is needed for prose.
-2. Recheck default-branch synchronization and publish only accepted prose. The existing main-push workflow can publish an npm release: use the established `[skip ci]` documentation-commit convention and verify hosted workflow state after each push. It does not stop manual dispatches or already-running workflows. Keep workflow YAML and package artifacts unchanged. See [GitHub's skip guidance](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs).
-3. Refresh GitHub metadata, apply the accepted homepage/topics through supported access, and verify saved values. Record actual values in [github-metadata.md](github-metadata.md).
-4. Inspect rendered GitHub docs and link destinations at the published revision. Confirm no unintended new release, tag, or npm version before and after publication. The package README source change does not update npm's displayed README until an intended release.
-5. Record the published revision, completed checks, metadata readback, unchanged release state, documentation reconciliation, and repository cleanup. Replace pending status with verified outcomes, including for any final documentation push.
+- The lead accepted the exact 13-file prose diff after link/fragment, preserved-anchor, tool/source accuracy, privacy, and whitespace checks. Isolated local installer fixtures passed and cleaned up.
+- The default branch was synchronized before publication. Only accepted prose was committed, using `[skip ci]` because the existing main-push workflow can release the npm package. Workflow YAML, package artifacts, and runtime code were unchanged. This convention does not stop manual dispatches or already-running workflows; see [GitHub's skip guidance](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs).
+- Fresh GitHub page readback confirmed the website homepage and nine topics. See [github-metadata.md](github-metadata.md).
+- Hosted root/package READMEs and the installation/tool references rendered successfully. Local checks resolved 36 relative links, 17 public-repository blob/tree targets, and nine preserved README anchors; all three catalogs matched the 14 tool registrations.
+- After the implementation push, GitHub Actions remained at 198 runs with no new publication run. Remote tags were unchanged; GitHub's latest release and npm's displayed version remained `0.3.5`. The package README source is published on GitHub; npm's displayed README awaits an intended package release.
+- The agent-contract reconciliation was included in the implementation. This closeout records the verified publication outcome; final synchronization and cleanup are checked after its documentation-only push.
 
 ## Separate follow-ups
 
