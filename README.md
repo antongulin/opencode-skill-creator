@@ -1,5 +1,7 @@
 # OpenCode Skill Creator
 
+[![OpenCode Skill Creator — Build better skills. Create. Evaluate. Improve.](docs/assets/readme-hero.png)](https://skillcreator.page/)
+
 Create, evaluate, and improve OpenCode skills with a bundled workflow skill and TypeScript plugin.
 
 [![npm](https://img.shields.io/npm/v/opencode-skill-creator)](https://www.npmjs.com/package/opencode-skill-creator)

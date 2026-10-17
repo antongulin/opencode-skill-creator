@@ -183,6 +183,8 @@ distinct ownership boundary.
   contracts. Keep README onboarding short, preserve incoming README anchors, and use absolute
   public document links in `plugin/README.md` for npm rendering. Project registration still
   installs the bundled workflow skill at user level; document XDG/default paths accurately.
+- `docs/assets/` — public documentation artwork. `readme-hero.png` is the selected light
+  paper-style README hero; keep its website link and descriptive alt text in the root README.
 - `docs/repo-publishing/` — public assessment, metadata recommendations, and publication gates.
   Distinguish prepared work from verified publication; keep private evidence and account/local
   operational details out of public reports. `llms.txt` links public user resources only.
