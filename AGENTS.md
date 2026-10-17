@@ -179,6 +179,15 @@ distinct ownership boundary.
   `templates/`). Copied into `plugin/skill/` and shipped in the package; edit both the source
   skill and the plugin copy when behavior changes.
 - `examples/` — usage examples, not part of the published package.
+- `docs/installation.md` and `docs/tools.md` — detailed public setup/recovery and tool
+  contracts. Keep README onboarding short, preserve incoming README anchors, and use absolute
+  public document links in `plugin/README.md` for npm rendering. Project registration still
+  installs the bundled workflow skill at user level; document XDG/default paths accurately.
+- `docs/repo-publishing/` — public assessment, metadata recommendations, and publication gates.
+  Distinguish prepared work from verified publication; keep private evidence and account/local
+  operational details out of public reports. `llms.txt` links public user resources only.
+- `CONTRIBUTING.md`, `SECURITY.md`, and plain Markdown `.github/` templates — contributor
+  checks, private reporting contact, and issue/PR guidance; no runtime automation in templates.
 - `.github/workflows/` — `ci.yml` (npm ci + build + tests on PRs), `publish.yml` (auto
   patch-version bump and npm publish on `main`), and `code-review.yml` (Robin).
 

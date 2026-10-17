@@ -1,0 +1,26 @@
+# OpenCode Skill Creator
+
+> An independent OpenCode workflow skill and TypeScript plugin for creating skills, evaluating triggers, optimizing descriptions, and reviewing benchmarks. Based on Anthropic's skill-creator.
+
+## Start here
+
+- [Website](https://skillcreator.page/): project overview.
+- [Website documentation](https://skillcreator.page/docs/): usage guide.
+- [Repository README](https://github.com/antongulin/opencode-skill-creator/blob/main/README.md): quick start and compatibility.
+- [Installation and recovery](https://github.com/antongulin/opencode-skill-creator/blob/main/docs/installation.md): configuration scope, upgrades, and backups.
+- [Tool reference](https://github.com/antongulin/opencode-skill-creator/blob/main/docs/tools.md): all 14 tools and eval/review contracts.
+
+## Workflow and examples
+
+- [Bundled skill source](https://github.com/antongulin/opencode-skill-creator/blob/main/opencode-skill-creator/SKILL.md): workflow instructions.
+- [Docker Compose example](https://github.com/antongulin/opencode-skill-creator/tree/main/examples/docker-compose-helper): skill, trigger evals, and prompts.
+- [npm package](https://www.npmjs.com/package/opencode-skill-creator): package distribution.
+- [Releases](https://github.com/antongulin/opencode-skill-creator/releases): published release history.
+
+## Contribute and contact
+
+- [Contributing](https://github.com/antongulin/opencode-skill-creator/blob/main/CONTRIBUTING.md): development and verification.
+- [Security](https://github.com/antongulin/opencode-skill-creator/blob/main/SECURITY.md): private vulnerability reports.
+- [Issues](https://github.com/antongulin/opencode-skill-creator/issues): bugs and feature requests.
+- [About](https://skillcreator.page/about/): author and project background.
+- [Sponsor](https://skillcreator.page/sponsor/): support the project.

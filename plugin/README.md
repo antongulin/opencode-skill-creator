@@ -1,10 +1,32 @@
-# opencode-skill-creator
+# OpenCode Skill Creator
+
+Create, evaluate, and improve OpenCode skills with a bundled workflow skill and TypeScript plugin.
 
 [![npm](https://img.shields.io/npm/v/opencode-skill-creator)](https://www.npmjs.com/package/opencode-skill-creator)
 
-A **skill + plugin** for [OpenCode](https://opencode.ai) that helps you create, test, and optimize other OpenCode skills.
+[Website](https://skillcreator.page/) · [Documentation](https://skillcreator.page/docs/) · [Example](https://github.com/antongulin/opencode-skill-creator/tree/main/examples/docker-compose-helper) · [Source](https://github.com/antongulin/opencode-skill-creator)
 
-This is a faithful adaptation of Anthropic's official [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) for Claude Code, fully rewritten to work with OpenCode's extensibility mechanisms. The Python scripts from the original have been ported to TypeScript and packaged as an OpenCode plugin with custom tools.
+## Quick start
+
+For OpenCode V2, run this from your project directory with Node.js and npm available:
+
+```sh
+npx opencode-skill-creator install --project
+```
+
+Restart OpenCode in that project, then ask:
+
+> Use opencode-skill-creator to create a skill that reviews Docker Compose files.
+
+The project flag scopes plugin configuration to this project. On startup, the plugin still installs its bundled workflow skill at `$XDG_CONFIG_HOME/opencode/skills/opencode-skill-creator/`, or `~/.config/opencode/skills/opencode-skill-creator/` when unset.
+
+Use `install --global` for all projects. V1 users need [manual setup](#supported-v1-setup-manual). See the [installation guide](https://github.com/antongulin/opencode-skill-creator/blob/main/docs/installation.md) for requirements, manual V2 configuration, verification, upgrades, and backup-first recovery.
+
+## Install
+
+The installer writes V2's `plugins` array. It keeps existing plugins and any legacy `plugin` array. Global installation also attempts to clear this package's stale OpenCode cache and matching Desktop plugin-fault notifications. CLI global configuration uses `~/.config/opencode/`, even when `XDG_CONFIG_HOME` points elsewhere; use the installation guide's manual configuration for a custom config root.
+
+Configuration success does not prove the plugin loaded. Reopen the configured project and check that the bundled SKILL.md and tools are available. OpenCode obtains the npm package when loading the configuration; manual configuration still requires package access.
 
 ## Compatibility
 
@@ -20,13 +42,12 @@ reads `plugin`, so on the supported V1 floor you add the plugin to `plugin` manu
 restart OpenCode (see [Supported V1 setup (manual)](#supported-v1-setup-manual)).
 
 Older V1 releases (before 1.18.29) only accept a function default export, which this package
-no longer provides. If you must support them, pin the older `0.2.x` line — the last releases
+no longer provides. If you must support them, pin the older `0.2.x` line, the last releases
 that accepted the function default export. The `0.3.x` line requires the `>= 1.18.29` floor.
 
 On the supported V1 floor, `server()` also returns a `dispose()` hook. OpenCode calls it when
-the plugin is unloaded, so review servers started through `skill_serve_review` release their
-ports instead of leaking them across a reload; V2 gets the same guarantee from the cleanup
-closure `setup()` returns. Both release only the servers the instance started.
+the plugin is unloaded, so it can release review servers started through `skill_serve_review`.
+V2 uses the cleanup closure that `setup()` returns. Both release only the servers the instance started.
 
 ### Supported V1 setup (manual)
 
@@ -42,8 +63,7 @@ package under the singular `plugin` key yourself:
    }
    ```
 
-3. Restart OpenCode — the config is read at startup, so a running session will not pick up the
-   change until it restarts.
+3. Restart OpenCode in the configured project to load the plugin.
 
 Do not add the package to **both** keys as a routine setup: V1 ignores `plugins`, and a mixed
 config can change which entries other plugins load. One exception: the installer upgrades a V1
@@ -52,354 +72,49 @@ upgraded config can legitimately contain both. After upgrading, keep only the ke
 uses and preserve the other entries you still want — the installer does not remove or rewrite
 your existing plugin lists.
 
-## Install
-
-Package: https://www.npmjs.com/package/opencode-skill-creator
-
-### Pick your option
-
-| If you are... | Use this |
-|---|---|
-| New to OpenCode / non-developer | **Option A (Recommended)** |
-| Already using other plugins | **Option B** |
-| Setting up all projects on your computer | **Option C (Global config)** |
-| Setting up only one project | **Option D (Project config)** |
-| Cannot use npm / offline environment | **Option E (Manual install)** |
-
-### Option A (Recommended): easiest setup for most users
-
-Run one command (global install, recommended):
-
-```bash
-npx opencode-skill-creator install --global
-```
-
-Optional checks:
-
-```bash
-npx opencode-skill-creator --version
-npx opencode-skill-creator --help
-npx opencode-skill-creator --about
-```
-
-What this command does:
-
-1. Updates existing `~/.config/opencode/opencode.jsonc` when present; otherwise creates/updates `opencode.json`
-2. Adds `"opencode-skill-creator"` to the `plugins` array (OpenCode V2), leaving any legacy `plugin` array untouched
-3. Leaves your existing plugins untouched
-
-The installer configures **OpenCode V2 only**. On the supported V1 floor, add the package to the
-singular `plugin` array yourself (see [Supported V1 setup (manual)](#supported-v1-setup-manual)).
-
-Then:
-
-4. Restart OpenCode
-5. Ask OpenCode: `Create a skill that helps with Docker compose files`
-
-That's it.
-
-Manual equivalent for the same result:
-
-1. Open (or create) `~/.config/opencode/opencode.jsonc` or `~/.config/opencode/opencode.json`
-2. Paste this:
-
-```json
-{
-  "plugins": ["opencode-skill-creator"]
-}
-```
-
-3. Restart OpenCode.
-
-If you want project-only install instead, use:
-
-```bash
-npx opencode-skill-creator install --project
-```
-
-### Option B: you already have plugins
-
-If your file already has plugins, append this package to the list:
-
-```json
-{
-  "plugins": [
-    "your-existing-plugin",
-    "opencode-skill-creator"
-  ]
-}
-```
-
-Do not remove your existing plugins.
-
-### Option C: global config (works in all projects)
-
-Use global config when you want this plugin available everywhere.
-
-Command version:
-
-```bash
-npx opencode-skill-creator install --global
-```
-
-1. Open (or create) `~/.config/opencode/opencode.jsonc` or `~/.config/opencode/opencode.json`
-2. Add:
-
-```json
-{
-  "plugins": ["opencode-skill-creator"]
-}
-```
-
-3. Restart OpenCode.
-
-### Option D: project config (only one project)
-
-Use project config when you want this plugin only for one repo.
-
-Command version:
-
-```bash
-npx opencode-skill-creator install --project
-```
-
-1. Open (or create) `opencode.jsonc` or `opencode.json` in that project root
-2. Add:
-
-```json
-{
-  "plugins": ["opencode-skill-creator"]
-}
-```
-
-3. Restart OpenCode in that project.
-
-### Option E: manual install (no npm)
-
-```bash
-git clone https://github.com/antongulin/opencode-skill-creator.git
-cd opencode-skill-creator
-
-# Install the skill (global)
-cp -r opencode-skill-creator/ ~/.config/opencode/skills/opencode-skill-creator/
-
-# Install the plugin (global)
-cp -r plugin/ ~/.config/opencode/plugins/skill-creator/
-```
-
-Then create `~/.config/opencode/package.json` if needed:
-
-```json
-{
-  "dependencies": {
-    "@opencode-ai/plugin": ">=1.18.29"
-  }
-}
-```
-
-### What happens after install
-
-After you add `opencode-skill-creator` and restart OpenCode:
-
-1. OpenCode installs the plugin from npm automatically.
-2. The npm package loads compiled JavaScript from `dist/skill-creator.js`.
-3. On first plugin startup, it auto-copies skill files to `~/.config/opencode/skills/opencode-skill-creator/`.
-4. Restart OpenCode after changing config because plugin config is loaded at startup.
-
-The package declares `@opencode-ai/plugin` as a required peer (the compiled bundle imports
-`tool` from it at runtime) and `@opencode/plugin` as an optional peer. npm installs the
-required peer automatically; the optional V2 SDK is only needed to type-check a source build.
-If your package manager still reports a peer conflict, install a version of `@opencode/plugin`
-that matches your OpenCode release.
-
-### Verify install
-
-Check that the skill file exists:
-
-```bash
-ls ~/.config/opencode/skills/opencode-skill-creator/SKILL.md
-```
-
-Then ask OpenCode:
-
-```text
-Use opencode-skill-creator to create a skill that helps with API documentation.
-```
-
-You should see it use the opencode-skill-creator workflow/tools.
-
-### Migration from the old `skill-creator` folder
-
-Earlier versions installed the bundled skill as the generic `skill-creator` skill. That could conflict with other plugins, including Superpowers, that also provide a skill with the same name.
-
-Current versions install the bundled skill as `opencode-skill-creator` instead. On startup, if the plugin finds an old plugin-owned folder at `~/.config/opencode/skills/skill-creator/`, it moves that folder to an inactive backup such as:
-
-```text
-~/.config/opencode/skills/skill-creator.opencode-skill-creator-backup-YYYYMMDDTHHMMSS/
-```
-
-The backup preserves user files and renames `SKILL.md` to `SKILL.md.backup` so OpenCode will not keep loading the old generic skill. If the old `skill-creator` folder does not contain the plugin's `.opencode-skill-creator-version` marker, the plugin leaves it untouched because it may belong to another plugin or a manually installed skill.
-
-### Troubleshooting
-
-- `I don't have opencode.json or opencode.jsonc`: create one in project root (or use global config path).
-- `Nothing changed after edit`: fully restart OpenCode.
-- `I already had plugins`: keep them; just add `opencode-skill-creator` to the same array.
-- `I want a clean reinstall`: delete `~/.config/opencode/skills/opencode-skill-creator/` and restart OpenCode.
-- `I still see another skill-creator skill`: if `~/.config/opencode/skills/skill-creator/` has no `.opencode-skill-creator-version` marker, it is not managed by this plugin and must be reviewed separately.
-- `npx command failed`: run `npx opencode-skill-creator --help` and then use `install` or `install --global`.
-
-### Compatibility fixes
-
-- The installer supports existing `opencode.jsonc` files and preserves JSONC comments when adding the plugin entry.
-- The npm package loads compiled JavaScript from `dist/skill-creator.js` so OpenCode does not need to strip TypeScript under `node_modules`.
-- The plugin resolves bundled assets with `import.meta.url`, which works in OpenCode Desktop runtimes where `import.meta.path` is unavailable.
-- Trigger evaluations run with an explicit OpenCode agent, defaulting to `build`, to avoid false 0% scores from delegating default agents.
-- **Project scope (V2):** each plugin instance evaluates the project root it was loaded for, not the process working directory. `skill_eval` and `skill_optimize_loop` both use that root.
-- **Effective config in the eval root:** the isolated eval project mirrors the target project's direct root config (`opencode.jsonc`/`opencode.json`), the relative files those documents reference (`instructions` paths, `{file:...}` substitutions, and single-directory glob patterns such as `dir/*.md`), and the `.opencode/` config. The `.opencode/` mirror preserves sibling skills under `.opencode/skills` and excludes only the skill under test; independently, a canonical-path guard excludes config references that resolve into the skill root (`.opencode/skills` or the tested skill), including via a symlink alias, and the tested skill's own directory is excluded wherever it lives in the project (a reference to an ancestor that would copy it is refused). Providers, agents, and project instructions defined at the project root therefore stay effective during eval runs. Relative references stay resolvable because they are mirrored at the same relative position. References the mirror cannot carry — a path that resolves outside the project root (for example `../shared/rules.md`), unsupported `**` recursion or brace alternation, or a malformed glob segment (for example `[z-a]`) — are reported on stderr rather than silently dropped.
-- **Cancellation:** `skill_eval`, `skill_optimize_loop`, and `skill_improve_description` honor the caller's abort signal (`context.signal` in V2, `context.abort` in V1). Aborting kills the running `opencode` child, skips queued queries, and rejects with an `AbortError`, so a cancelled run is never reported as a normal failed/`run_errors: 0` result. The isolated eval temp root is always removed.
-- **Per-item eval identity:** an eval set is measured per item, not per query string. Two entries with the same query text but different labels stay two results with their own pass/fail, `skill_eval` returns one result per eval-set item, and `skill_optimize_loop` splits train/test by position so a query duplicated across the holdout boundary is scored once on each side. With at least one worker and one run per item, every scheduled item yields exactly one result, in eval-set order.
-- **Bounded frontmatter block scalars:** `skill_parse` and the eval path read `|`/`>` block scalars with optional chomping (`+`/`-`) and explicit indent (`1`–`9`) in either order, matching the YAML reference for that subset (literal breaks, folded paragraphs, blank and more-indented lines, clip/strip/keep). It is not a full YAML parser.
-- **Upgrade-safe install:** on each startup the plugin records the files it copied; an upgrade removes only files that are recorded, still byte-identical to the copied version, and no longer shipped by the newer bundle. The reserved `SKILL.md`, `SKILL.md.user-backup`, version marker, and manifest are never owned or removed (even if a manifest names them); removal never follows a symlink (the managed directory and every path above a candidate file are checked), and a dropped file you have since edited, plus any untracked or unknown file, is preserved. Files the newer bundle still ships keep the existing copy behavior and are refreshed on upgrade, which can overwrite edits to them — except `SKILL.md`, which is retained and backed up. Ownership metadata is written before the version marker; if that metadata write fails, the version marker is not advanced. These two writes are not atomic. Installs made before this tracking existed keep their untracked files and start tracking from the next update.
-- Release-safety tests now verify the compiled plugin entrypoint imports correctly and that `dist/` was built from the current TypeScript sources.
-- The published artifact runs on the promised Node floor (`engines.node >= 18`); the runtime-floor test executes real tool behavior (setup + `skill_parse` + `skill_validate`) under a provisioned floor Node binary when one is available, and skips honestly when it is not.
-
-### For LLMs / automation (compact)
-
-```json
-{ "plugins": ["opencode-skill-creator"] }
-```
-
 ## What it does
 
-When loaded, this skill guides OpenCode through the full skill development lifecycle:
+Use the workflow to draft a skill, generate trigger evals, optimize its description, compare benchmarks, and review task outputs. Trigger evals measure selection of a skill, not task-output quality. Use paired graded outputs and human review for quality comparisons.
 
-1. **Analyze** the user's request and determine what kind of skill to build
-2. **Create** a well-structured skill with proper frontmatter, SKILL.md, and supporting files
-3. **Generate** an eval set of test queries (should-trigger and should-not-trigger)
-4. **Evaluate** the skill's description by testing whether it triggers correctly
-5. **Optimize** the description through iterative improvement loops
-6. **Benchmark** skill performance with variance analysis
-7. **Install** the skill to the project or global OpenCode skills directory
+This independent OpenCode adaptation of [Anthropic's skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) ports the automation from Python to TypeScript. Model/provider behavior varies and their usage can cost money.
 
 ## Plugin tools
 
-The plugin registers these custom tools that OpenCode can call:
-
 | Tool | Purpose |
-|------|---------|
+|---|---|
 | `skill_validate` | Validate SKILL.md structure and frontmatter |
-| `skill_parse` | Parse SKILL.md and extract name/description |
-| `skill_eval` | Test trigger accuracy for eval queries |
-| `skill_improve_description` | LLM-powered description improvement |
-| `skill_optimize_loop` | Full eval->improve optimization loop |
-| `skill_aggregate_benchmark` | Aggregate grading results into statistics |
-| `skill_generate_report` | Generate HTML optimization report |
-| `skill_serve_review` | Start the eval review viewer (HTTP server) |
-| `skill_stop_review` | Stop a running review server |
-| `skill_export_static_review` | Generate standalone HTML review file |
-| `skill_add_gold_standard` | Save an exemplary skill response for future guidance |
-| `skill_list_gold_standards` | List saved gold-standard examples for a skill |
-| `skill_remove_gold_standard` | Remove a saved gold-standard example |
-| `skill_get_gold_advice` | Get guidance from saved gold-standard examples |
+| `skill_parse` | Read name, description, and full content |
+| `skill_eval` | Measure description trigger accuracy |
+| `skill_improve_description` | Propose a description from eval failures |
+| `skill_optimize_loop` | Evaluate and improve descriptions with a train/test split |
+| `skill_aggregate_benchmark` | Summarize grading, timing, and token usage |
+| `skill_generate_report` | Write an HTML description-optimization report |
+| `skill_serve_review` | Start an HTTP review viewer |
+| `skill_stop_review` | Stop review servers owned by this plugin instance |
+| `skill_export_static_review` | Write a standalone HTML review |
+| `skill_add_gold_standard` | Save a skill description example with its observed pass rate |
+| `skill_list_gold_standards` | List all saved description examples |
+| `skill_remove_gold_standard` | Remove a saved description example by ID |
+| `skill_get_gold_advice` | Format saved description examples for prompt context |
 
-### Review workflow guard (strict by default)
-
-The review launch tools now enforce paired comparison data by default:
-
-- `skill_serve_review` and `skill_export_static_review` require each `eval-*` directory to include:
-  - `with_skill`
-  - baseline (`without_skill` or `old_skill`)
-- If pairs are missing, the tools fail fast with a clear list of missing items.
-- Override only when intentionally reviewing partial data by passing `allowPartial: true`.
-- If `benchmarkPath` is omitted, the tools auto-generate `benchmark.json` and `benchmark.md` in the workspace.
-
-### Skill draft staging (recommended)
-
-When creating new skills, use a staging path in the system temp directory outside your current repository:
-
-- Unix/macOS draft skill path: `/tmp/opencode-skills/<skill-name>/` (or `$TMPDIR/opencode-skills/<skill-name>/`)
-- Unix/macOS eval workspace path: `/tmp/opencode-skills/<skill-name>-workspace/`
-- Windows draft/eval paths: `%TEMP%\\opencode-skills\\<skill-name>\\` and `%TEMP%\\opencode-skills\\<skill-name>-workspace\\`
-- Install only the final validated skill to:
-  - project: `.opencode/skills/<skill-name>/`
-  - global: `~/.config/opencode/skills/<skill-name>/`
-
-This keeps plugin/source repositories clean while preserving the full eval loop.
+See the [complete tool reference](https://github.com/antongulin/opencode-skill-creator/blob/main/docs/tools.md) for required inputs, defaults, eval behavior, and review setup. Gold standards are **skill description examples**, rather than task responses. Listing returns all saved examples; advice formats them for prompt context without running optimization.
 
 ## Usage
 
-Once installed, OpenCode will automatically detect the skill when you ask it to create or improve a skill. For example:
+Ask OpenCode to use opencode-skill-creator to create a skill or improve an existing description. The [Docker Compose example](https://github.com/antongulin/opencode-skill-creator/tree/main/examples/docker-compose-helper) includes the skill, trigger eval JSON, and tool prompts.
 
-- "Create a skill that helps with Docker compose files"
-- "Build me a skill for generating API documentation"
-- "Help me make a skill that assists with database migrations"
-- "Optimize the description of my existing skill"
-
-OpenCode will load the opencode-skill-creator instructions and use the plugin tools to walk through the full workflow.
+Review tools require paired `with_skill` and `without_skill` or `old_skill` runs by default. For automation, pass `openBrowser: false` to `skill_serve_review` or set `OPENCODE_SKILL_CREATOR_OPEN_BROWSER=0`. Stop the server with `skill_stop_review` when finished. See [review details](https://github.com/antongulin/opencode-skill-creator/blob/main/docs/tools.md#review-task-outputs).
 
 ## Architecture
 
-This project has two components:
+The Markdown skill supplies workflow instructions; the plugin supplies executable tools. OpenCode loads compiled JavaScript from `dist/skill-creator.js`. Asset paths use `import.meta.url` for Desktop compatibility. The bundle imports runtime `tool` support from the required `@opencode-ai/plugin` peer; `@opencode/plugin` is an optional peer used to type-check the V2 source build. Package metadata declares Node.js ≥ 18.
 
-| Component | What it is |
-|-----------|-----------|
-| **Skill** | Markdown instructions (SKILL.md + agents + templates) that tell the agent how to create, evaluate, and improve skills |
-| **Plugin** | TypeScript module that registers custom tools for validation, eval, benchmarking, and review |
+Startup installs the bundled skill at user level. Updates attempt to retain customized SKILL.md and refresh support files, which can overwrite edits. Use [backup-first recovery](https://github.com/antongulin/opencode-skill-creator/blob/main/docs/installation.md#reset-the-bundled-skill) for a reset. It does not upgrade the npm plugin.
 
-The skill provides the workflow knowledge; the plugin provides the executable tools the agent calls during that workflow.
+[Development and source layout](https://github.com/antongulin/opencode-skill-creator/blob/main/CONTRIBUTING.md) · [Private security reports](https://github.com/antongulin/opencode-skill-creator/blob/main/SECURITY.md)
 
-On first startup, the plugin automatically copies the bundled skill files to `~/.config/opencode/skills/opencode-skill-creator/`. If you need to reinstall the skill (e.g., after an update), delete that directory and restart OpenCode.
-
-## Project structure
-
-```
-opencode-skill-creator/
-├── README.md
-├── LICENSE                            # Apache 2.0
-├── opencode-skill-creator/            # The SKILL
-│   ├── SKILL.md                       # Main skill instructions
-│   ├── agents/
-│   │   ├── grader.md                  # Assertion evaluation
-│   │   ├── analyzer.md                # Benchmark analysis
-│   │   └── comparator.md              # Blind A/B comparison
-│   ├── references/
-│   │   └── schemas.md                 # JSON schema definitions
-│   └── templates/
-│       └── eval-review.html           # Eval set review/edit UI
-└── plugin/                            # The PLUGIN (npm: opencode-skill-creator)
-    ├── package.json                   # npm package metadata
-    ├── skill-creator.ts               # Entry point — registers all tools
-    ├── skill/                         # Bundled copy of skill (auto-installed)
-    ├── lib/
-    │   ├── utils.ts                   # SKILL.md frontmatter parsing
-    │   ├── validate.ts                # Skill structure validation
-    │   ├── run-eval.ts                # Trigger evaluation via opencode run
-    │   ├── improve-description.ts     # LLM-powered description improvement
-    │   ├── run-loop.ts                # Eval→improve optimization loop
-    │   ├── aggregate.ts               # Benchmark aggregation
-    │   ├── report.ts                  # HTML report generation
-    │   └── review-server.ts           # Eval review HTTP server
-    └── templates/
-        └── viewer.html                # Eval review viewer UI
-```
-
-## Differences from the Anthropic original
-
-| Area | Anthropic (Claude Code) | This repo (OpenCode) |
-|------|------------------------|---------------------|
-| CLI invocation | `claude -p "prompt"` | `opencode run "prompt"` |
-| Skill location | `.claude/commands/` | `.opencode/skills/` |
-| Automation scripts | Python (`scripts/*.py`) | TypeScript plugin (`plugin/lib/*.ts`) |
-| Script execution | `python -m scripts.run_loop` | `skill_optimize_loop` tool call |
-| Eval viewer | `python generate_review.py` | `skill_serve_review` tool call |
-| Benchmarking | `python aggregate_benchmark.py` | `skill_aggregate_benchmark` tool call |
-| Dependencies | Python 3.11+, pyyaml | Bun (via OpenCode), @opencode-ai/plugin |
-| Packaging | `.skill` zip files | npm package + skill directory |
-| Subagents | Built-in subagent concept | Task tool with `general`/`explore` types |
+Built by [Anton Gulin](https://skillcreator.page/about/). [Sponsor the project](https://skillcreator.page/sponsor/).
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
-
-Based on [anthropics/skills](https://github.com/anthropics/skills) by Anthropic.
+[Apache License 2.0](https://github.com/antongulin/opencode-skill-creator/blob/main/LICENSE). Based on [anthropics/skills](https://github.com/anthropics/skills) by Anthropic.
