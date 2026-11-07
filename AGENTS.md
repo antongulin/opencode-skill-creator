@@ -194,12 +194,3 @@ distinct ownership boundary.
   patch-version bump and npm publish on `main`), and `code-review.yml` (Robin).
 
 <!-- DOX:END -->
-
-<!-- BASELINE:BEGIN (managed by agents-md-bootstrap) -->
-## Engineering baseline
-
-This repo follows the baseline: `~/Code/700 systems/baseline` (https://github.com/antongulin/baseline, private).
-Read `baseline/00-laws.md` first; pillars 01–07 hold the law (workspace, agents, project,
-stacks, infra, delivery, knowledge). Answer standards questions from those files, not memory.
-Anything missing or broken against the baseline is surfaced loudly — never skipped (law 2).
-<!-- BASELINE:END -->
